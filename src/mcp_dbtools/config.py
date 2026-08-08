@@ -130,7 +130,8 @@ def load_settings() -> Settings:
         max_rows=int(env.get("MCP_DBTOOLS_MAX_ROWS", "1000")),
         connect_timeout=int(env.get("MCP_DBTOOLS_CONNECT_TIMEOUT", "30")),
         history_size=int(env.get("MCP_DBTOOLS_HISTORY_SIZE", "500")),
-        audit_file=env.get("MCP_DBTOOLS_AUDIT_FILE") or None,
+        # 审计日志默认开启落盘；设为空字符串可关闭
+        audit_file=env.get("MCP_DBTOOLS_AUDIT_FILE", "logs/audit.jsonl") or None,
         metrics_enabled=env.get("MCP_DBTOOLS_METRICS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
         script_root=env.get("MCP_DBTOOLS_SCRIPT_ROOT", "scripts/sql"),
