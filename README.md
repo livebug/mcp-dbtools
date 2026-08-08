@@ -171,17 +171,37 @@ curl http://<服务器IP>:8000/metrics
 # 返回: 数据源状态 / 内存 / 工具调用统计 / 运行时长
 ```
 
-### 审计日志（JSONL）
-每次工具调用都会记录到 `logs/audit.jsonl`（时间、工具、参数、耗时、成败、错误信息），供事后审计与排障。可通过 `get_execution_history` 工具在线查询最近 N 条。
+### 审计记录内容
+每次工具调用记录：时间、工具名、**客户端 IP / User-Agent**、参数（含完整 SQL，超长自动截断）、耗时、成败、错误信息。通过 ASGI 中间件自动采集访问 IP，随请求上下文写入审计。
+
+### 人工审计管理页面（/audit）
+内置 Web 审计管理页面（无外部依赖，适配内网离线环境）：
+
+```bash
+# 浏览器打开
+http://<服务器IP>:8000/audit
+```
+
+页面功能：
+- **概览卡片**：审计总数、今日、成功/失败数量
+- **多条件查询**：时间范围、工具、客户端 IP、SQL 关键字、成功/失败状态
+- **表格分页** + **详情弹窗**（完整参数 JSON、错误、UA）
+- **导出 CSV**
+- 数据来自 SQLite 审计库（`logs/audit.db`，可用 `MCP_DBTOOLS_AUDIT_DB` 配置）
+
+后端查询接口为 `GET /audit/api`（支持 `action=list / get / summary / export` 及筛选参数），供对接第三方审计系统。
+
+> 安全：启用 `MCP_DBTOOLS_AUTH_TOKEN` 后，`/audit/api` 与 `/mcp`、`/metrics` 均需携带 `Authorization: Bearer <token>`（页面可通过「访问令牌」输入框或 `?token=` 传入）。
 
 ### 配置项（.env）
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `MCP_DBTOOLS_HISTORY_SIZE` | `500` | 内存执行历史条数 |
-| `MCP_DBTOOLS_AUDIT_FILE` | `logs/audit.jsonl` | 审计日志路径，留空关闭落盘 |
+| `MCP_DBTOOLS_AUDIT_FILE` | `logs/audit.jsonl` | 审计日志(JSONL)路径，留空关闭 |
+| `MCP_DBTOOLS_AUDIT_DB` | `logs/audit.db` | 审计 SQLite 库（审计页面数据源），空则禁用页面查询 |
 | `MCP_DBTOOLS_METRICS_ENABLED` | `true` | 是否开放 `/metrics` |
 
-> 提示：审计日志会记录 SQL 参数（超长自动截断）。若对敏感查询有顾虑，可关闭落盘（`MCP_DBTOOLS_AUDIT_FILE=`），仅保留内存历史。
+> 提示：审计会记录 SQL 参数与访问 IP。若对敏感查询有顾虑，可关闭落盘（`MCP_DBTOOLS_AUDIT_FILE=`、`MCP_DBTOOLS_AUDIT_DB=`），仅保留内存历史。
 
 ## 客户端接入
 

@@ -9,9 +9,10 @@ import pytest
 from mcp_dbtools.monitor import Monitor, wrap_tool
 
 
-def _mk_monitor(tmp_path, size=5):
+def _mk_monitor(tmp_path, size=5, audit_db=True):
     audit = tmp_path / "audit.jsonl"
-    return Monitor(history_size=size, audit_file=str(audit)), audit
+    db = str(tmp_path / "audit.db") if audit_db else None
+    return Monitor(history_size=size, audit_file=str(audit), audit_db=db), audit
 
 
 def test_record_and_history(tmp_path):
@@ -103,3 +104,47 @@ def test_wrap_tool_records_error(tmp_path):
     hist = m.execution_history(1)
     assert hist[0]["ok"] is False
     assert "oops" in hist[0]["error"]
+
+
+# ---------- SQLite 审计查询 ----------
+def test_audit_db_write_and_query(tmp_path):
+    m, _ = _mk_monitor(tmp_path)
+    m.record_tool_call("execute_query", {"sql": "SELECT 1"}, duration=0.1, ok=True,
+                       client_ip="10.0.0.1", user_agent="curl")
+    m.record_tool_call("execute_query", {"sql": "SELECT BAD"}, duration=0.05, ok=False, error="bad",
+                       client_ip="10.0.0.2")
+    m.record_tool_call("execute_script", {"script_path": "a.sql"}, ok=True, client_ip="10.0.0.1")
+    # 全量
+    r = m.query_audit()
+    assert r["total"] == 3
+    assert r["items"][0]["tool"] == "execute_script"
+    # 按工具 + 失败过滤
+    r = m.query_audit(tool="execute_query", ok=False)
+    assert r["total"] == 1
+    assert r["items"][0]["client_ip"] == "10.0.0.2"
+    # 按 IP 过滤
+    r = m.query_audit(ip="10.0.0.1")
+    assert r["total"] == 2
+    # 按关键字（SQL）
+    r = m.query_audit(q="SELECT 1")
+    assert r["total"] == 1
+    # 分页
+    r = m.query_audit(page=1, page_size=2)
+    assert r["total"] == 3 and len(r["items"]) == 2
+
+
+def test_audit_db_get_and_summary(tmp_path):
+    m, _ = _mk_monitor(tmp_path)
+    m.record_tool_call("execute_query", {"sql": "SELECT 1"}, ok=True, client_ip="1.2.3.4")
+    m.record_tool_call("execute_query", {"sql": "SELECT BAD"}, ok=False, error="x", client_ip="1.2.3.4")
+    # get_audit by id
+    first_id = m.query_audit(page_size=1)["items"][0]["id"]
+    item = m.get_audit(first_id)
+    assert item is not None and item["client_ip"] == "1.2.3.4"
+    assert m.get_audit(99999) is None
+    # summary
+    s = m.audit_summary()
+    assert s["total"] == 2
+    assert s["success"] == 1 and s["failed"] == 1
+    assert s["top_tools"][0]["tool"] == "execute_query"
+    assert s["top_ips"][0]["ip"] == "1.2.3.4"

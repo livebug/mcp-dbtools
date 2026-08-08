@@ -95,7 +95,8 @@ class Settings:
     connect_timeout: int = 30
     # ---- 监控与审计 ----
     history_size: int = 500          # 执行历史环形缓冲条数
-    audit_file: str | None = "logs/audit.jsonl"  # 审计日志路径，空则关闭落盘
+    audit_file: str | None = "logs/audit.jsonl"  # 审计日志(JSONL)路径，空则关闭
+    audit_db: str | None = "logs/audit.db"  # 审计 SQLite 库（人工审计页面数据源）
     metrics_enabled: bool = True     # 是否开放 /metrics 端点
     # ---- 脚本执行 ----
     script_root: str = "scripts/sql"  # SQL 脚本根目录（execute_script 限定于此）
@@ -132,6 +133,7 @@ def load_settings() -> Settings:
         history_size=int(env.get("MCP_DBTOOLS_HISTORY_SIZE", "500")),
         # 审计日志默认开启落盘；设为空字符串可关闭
         audit_file=env.get("MCP_DBTOOLS_AUDIT_FILE", "logs/audit.jsonl") or None,
+        audit_db=env.get("MCP_DBTOOLS_AUDIT_DB", "logs/audit.db") or None,
         metrics_enabled=env.get("MCP_DBTOOLS_METRICS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
         script_root=env.get("MCP_DBTOOLS_SCRIPT_ROOT", "scripts/sql"),

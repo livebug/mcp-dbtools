@@ -18,9 +18,10 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .audit_page import AUDIT_HTML
 from .config import ConfigError, load_settings
 from .jdbc import JDBCManager
-from .monitor import Monitor
+from .monitor import Monitor, set_client_info
 from .tools import register_tools
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ def _build_core(settings: Any) -> tuple[FastMCP, JDBCManager, Monitor]:
     monitor = Monitor(
         history_size=settings.history_size,
         audit_file=settings.audit_file,
+        audit_db=settings.audit_db,
     )
     register_tools(mcp, settings, manager, monitor)
     return mcp, manager, monitor
@@ -101,14 +103,83 @@ def build_app(settings: Any):
             }
         )
 
-    # 在 MCP 路由之前插入 /health、/metrics（Starlette 按顺序匹配）
+    # 在 MCP 路由之前插入 /health、/metrics、/audit（Starlette 按顺序匹配）
     app.router.routes.insert(0, Route("/health", health))
     if settings.metrics_enabled:
         app.router.routes.insert(0, Route("/metrics", metrics))
 
-    # 可选 Bearer Token 鉴权（作为纯 ASGI 包装器，保留 lifespan 透传）
+    # ---------- 审计管理页面 / API ----------
+    from starlette.responses import HTMLResponse
+
+    async def audit_page(request: Request):
+        return HTMLResponse(AUDIT_HTML)
+
+    def _to_int(v: str, default: int) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+
+    async def audit_api(request: Request):
+        """人工审计查询 API。"""
+        p = request.query_params
+        action = p.get("action", "list")
+        if action == "summary":
+            return JSONResponse(monitor.audit_summary())
+        if action == "get":
+            item = monitor.get_audit(_to_int(p.get("id", "0"), 0))
+            return JSONResponse({"item": item})
+        # list / export
+        page = _to_int(p.get("page", "1"), 1)
+        page_size = _to_int(p.get("page_size", "10000" if action == "export" else "20"), 20)
+        ok_raw = p.get("ok", "")
+        ok = None if ok_raw in ("", None) else ok_raw == "1"
+        data = monitor.query_audit(
+            page=page,
+            page_size=min(page_size, 10000),
+            tool=p.get("tool") or None,
+            ip=p.get("ip") or None,
+            ok=ok,
+            q=p.get("q") or None,
+            ts_from=p.get("from") or None,
+            ts_to=p.get("to") or None,
+        )
+        return JSONResponse(data)
+
+    app.router.routes.insert(0, Route("/audit/api", audit_api))
+    app.router.routes.insert(0, Route("/audit", audit_page))
+
+    # ---------- 记录客户端 IP / UA（contextvar，随请求上下文传递到工具）----------
+    class ClientInfoMiddleware:
+        def __init__(self, inner: Any):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                headers = {
+                    k.decode().lower(): v.decode()
+                    for k, v in scope.get("headers", [])
+                }
+                client = scope.get("client") or ("", 0)
+                set_client_info(
+                    client_ip=client[0] if client and client[0] else None,
+                    user_agent=headers.get("user-agent"),
+                )
+            await self.inner(scope, receive, send)
+
+    app = ClientInfoMiddleware(app)  # type: ignore[assignment]
+
+    # ---------- 可选 Bearer Token 鉴权 ----------
     token = settings.auth_token
     if token:
+        from urllib.parse import unquote, urlsplit, parse_qsl
+
+        def _query_token(scope: Any) -> str:
+            qs = scope.get("query_string", b"").decode()
+            for k, v in parse_qsl(qs):
+                if k == "token":
+                    return v
+            return ""
 
         class AuthMiddleware:
             def __init__(self, inner: Any):
@@ -120,27 +191,35 @@ def build_app(settings: Any):
                     return
                 if scope["type"] == "http":
                     path = scope.get("path", "")
-                    if path.startswith("/health"):
+                    # 免鉴权：健康检查 与 审计页面（HTML 壳，数据在 /audit/api 保护）
+                    if path.startswith("/health") or (
+                        path.startswith("/audit") and not path.startswith("/audit/api")
+                    ):
                         await self.inner(scope, receive, send)
                         return
                     headers = {
                         k.decode().lower(): v.decode()
                         for k, v in scope.get("headers", [])
                     }
-                    if headers.get("authorization", "") != f"Bearer {token}":
-                        body = b'{"detail":"unauthorized"}'
-                        await send(
-                            {
-                                "type": "http.response.start",
-                                "status": 401,
-                                "headers": [
-                                    (b"content-type", b"application/json"),
-                                    (b"content-length", str(len(body)).encode()),
-                                ],
-                            }
-                        )
-                        await send({"type": "http.response.body", "body": body})
+                    authorized = headers.get("authorization", "") == f"Bearer {token}"
+                    if not authorized:
+                        authorized = _query_token(scope) == token
+                    if authorized:
+                        await self.inner(scope, receive, send)
                         return
+                    body = b'{"detail":"unauthorized"}'
+                    await send(
+                        {
+                            "type": "http.response.start",
+                            "status": 401,
+                            "headers": [
+                                (b"content-type", b"application/json"),
+                                (b"content-length", str(len(body)).encode()),
+                            ],
+                        }
+                    )
+                    await send({"type": "http.response.body", "body": body})
+                    return
                 await self.inner(scope, receive, send)
 
         app = AuthMiddleware(app)  # type: ignore[assignment]
