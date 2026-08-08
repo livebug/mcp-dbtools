@@ -91,8 +91,17 @@ class Settings:
     auth_token: str | None = None
     config_path: str = "config/datasources.json"
     drivers_dir: str = "drivers"
-    max_rows: int = 1000
+    max_rows: int = 300             # 单次查询默认返回行数上限（默认 300，防一次性拉大数据量）
+    max_rows_limit: int = 10000     # limit 参数允许的最大值（超限按此截断）
     connect_timeout: int = 30
+    # ---- 连接池与并发 ----
+    pool_size: int = 2              # 每个数据源的 JDBC 连接池大小
+    # ---- 熔断 ----
+    circuit_fail_threshold: int = 3  # 连续失败 N 次触发熔断
+    circuit_cooldown: int = 30       # 熔断冷却时间（秒）
+    # ---- 大数据量异步导出 ----
+    export_dir: str = "exports"      # 导出文件目录
+    export_max_rows: int = 100000    # 单次导出最大行数
     # ---- 监控与审计 ----
     history_size: int = 500          # 执行历史环形缓冲条数
     audit_file: str | None = "logs/audit.jsonl"  # 审计日志(JSONL)路径，空则关闭
@@ -128,8 +137,14 @@ def load_settings() -> Settings:
         auth_token=env.get("MCP_DBTOOLS_AUTH_TOKEN") or None,
         config_path=env.get("MCP_DBTOOLS_CONFIG", "config/datasources.json"),
         drivers_dir=env.get("MCP_DBTOOLS_DRIVERS_DIR", "drivers"),
-        max_rows=int(env.get("MCP_DBTOOLS_MAX_ROWS", "1000")),
+        max_rows=int(env.get("MCP_DBTOOLS_MAX_ROWS", "300")),
+        max_rows_limit=int(env.get("MCP_DBTOOLS_MAX_ROWS_LIMIT", "10000")),
         connect_timeout=int(env.get("MCP_DBTOOLS_CONNECT_TIMEOUT", "30")),
+        pool_size=int(env.get("MCP_DBTOOLS_POOL_SIZE", "2")),
+        circuit_fail_threshold=int(env.get("MCP_DBTOOLS_CIRCUIT_FAIL_THRESHOLD", "3")),
+        circuit_cooldown=int(env.get("MCP_DBTOOLS_CIRCUIT_COOLDOWN", "30")),
+        export_dir=env.get("MCP_DBTOOLS_EXPORT_DIR", "exports"),
+        export_max_rows=int(env.get("MCP_DBTOOLS_EXPORT_MAX_ROWS", "100000")),
         history_size=int(env.get("MCP_DBTOOLS_HISTORY_SIZE", "500")),
         # 审计日志默认开启落盘；设为空字符串可关闭
         audit_file=env.get("MCP_DBTOOLS_AUDIT_FILE", "logs/audit.jsonl") or None,

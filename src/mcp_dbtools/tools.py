@@ -16,7 +16,8 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import Field
 
 from .config import ConfigError, Settings, get_datasource
-from .jdbc import JDBCError, JDBCManager
+from .export import ExportManager
+from .jdbc import JDBCError, JDBCManager, _sql_kind
 from .monitor import Monitor, wrap_tool
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,11 @@ def _err(msg: str) -> str:
 
 
 def register_tools(
-    mcp: FastMCP, settings: Settings, manager: JDBCManager, monitor: Monitor
+    mcp: FastMCP,
+    settings: Settings,
+    manager: JDBCManager,
+    monitor: Monitor,
+    export_mgr: ExportManager,
 ) -> None:
     @mcp.tool()
     @wrap_tool(monitor, "list_datasources")
@@ -54,16 +59,23 @@ def register_tools(
     def execute_query(
         datasource: DatasourceArg,
         sql: Annotated[
-            str, Field(description="只读 SQL 语句（SELECT / SHOW / DESCRIBE 等）")
+            str, Field(description="SQL 语句（默认只读，写操作需 confirm=true 才执行）")
         ],
         limit: Annotated[
-            int, Field(default=1000, ge=1, le=10000, description="最多返回的行数")
-        ] = 1000,
+            int, Field(default=300, ge=1, le=10000, description="最多返回行数（上限 10000，默认 300）")
+        ] = 300,
+        confirm: Annotated[
+            bool, Field(description="写操作（DELETE/UPDATE/INSERT/DROP 等）二次确认，默认 false 会拦截")
+        ] = False,
     ) -> dict[str, Any] | str:
-        """在指定数据源上执行只读 SQL，返回列名与数据行（含执行耗时 execution_time_ms）。"""
+        """在指定数据源上执行 SQL，返回列名与数据行（含 execution_time_ms）。
+
+        安全：默认只读模式，写操作（DELETE/UPDATE 等）需 confirm=true 二次确认并记审计；
+        大数据量查询默认最多返回 300 行，如需更多请用 start_export 异步导出。
+        """
         try:
             ds = get_datasource(settings, datasource)
-            return manager.execute_query(ds, sql, limit=limit)
+            return manager.execute_query(ds, sql, limit=limit, confirm=confirm)
         except (ConfigError, JDBCError) as exc:
             return _err(str(exc))
 
@@ -81,19 +93,22 @@ def register_tools(
             bool, Field(description="是否只允许只读语句（默认 true）")
         ] = True,
         limit: Annotated[
-            int, Field(default=1000, ge=1, le=10000, description="每条语句最多返回行数")
-        ] = 1000,
+            int, Field(default=300, ge=1, le=10000, description="每条语句最多返回行数")
+        ] = 300,
+        confirm: Annotated[
+            bool, Field(description="写操作二次确认（read_only=false 且含写语句时需 confirm=true）")
+        ] = False,
     ) -> dict[str, Any] | str:
         """执行服务器上的 SQL 脚本文件，支持 ${VAR} 参数占位符（如 ${V_DATE}）。
 
-        参数来源：params -> 环境变量 -> 缺失报错。脚本文件须位于脚本根目录
-        （默认 scripts/sql，可用 MCP_DBTOOLS_SCRIPT_ROOT 配置）内。
-        返回每条语句的列、行、耗时；默认只读模式。
+        参数来源：params -> 环境变量 -> 缺失报错。脚本须位于脚本根目录内。
+        默认只读；写操作需 read_only=false + confirm=true 二次确认并记审计。
         """
         try:
             ds = get_datasource(settings, datasource)
             return manager.execute_script(
-                ds, script_path, params=params, read_only=read_only, limit=limit
+                ds, script_path, params=params, read_only=read_only,
+                limit=limit, confirm=confirm,
             )
         except (ConfigError, JDBCError) as exc:
             return _err(str(exc))
@@ -187,3 +202,72 @@ def register_tools(
         """查询工具/SQL 执行历史（审计）：时间、工具、参数、耗时、是否成功。"""
         items = monitor.execution_history(limit=limit, tool=tool, ok=ok)
         return {"count": len(items), "history": items}
+
+    # ------------------------------------------------------------------
+    # 熔断状态
+    # ------------------------------------------------------------------
+    @mcp.tool()
+    @wrap_tool(monitor, "get_circuit_status")
+    def get_circuit_status(datasource: DatasourceArg) -> dict[str, Any] | str:
+        """查询数据源的熔断状态：是否熔断、连续失败次数、冷却剩余时间。"""
+        try:
+            get_datasource(settings, datasource)  # 校验存在
+            return manager.circuit_status(datasource)
+        except ConfigError as exc:
+            return _err(str(exc))
+
+    # ------------------------------------------------------------------
+    # 大数据量异步导出
+    # ------------------------------------------------------------------
+    @mcp.tool()
+    @wrap_tool(monitor, "start_export")
+    def start_export(
+        datasource: DatasourceArg,
+        sql: Annotated[str, Field(description="导出的 SQL（应为查询语句）")],
+        delimiter: Annotated[
+            str, Field(description="字段分隔符（默认逗号，可自定义 \\t、| 等）")
+        ] = ",",
+        include_header: Annotated[bool, Field(description="是否包含表头行")] = True,
+        filename: Annotated[
+            str | None, Field(description="导出文件名（可选，自动追加 .txt）")
+        ] = None,
+        limit: Annotated[
+            int, Field(default=100000, ge=1, le=1000000, description="导出最大行数")
+        ] = 100000,
+        confirm: Annotated[
+            bool, Field(description="写操作确认（导出仅支持查询语句，默认 false）")
+        ] = False,
+    ) -> dict[str, Any] | str:
+        """发起大数据量异步导出：后台执行 SQL 并写入文本文件（只导出数据）。
+
+        返回 export_id 与 download_url；用 get_export_status 轮询状态，
+        完成后访问 /export/{id}/download 下载文件。
+        分隔符可自定义（默认逗号）；CSV/Excel 等格式由客户端自行处理，服务端只导出数据。
+        """
+        try:
+            ds = get_datasource(settings, datasource)
+            if _sql_kind(sql) == "write" and not confirm:
+                return _err("导出仅支持查询语句；写操作需 confirm=true")
+            return export_mgr.start(
+                ds, sql, delimiter=delimiter, include_header=include_header,
+                filename=filename, limit=limit,
+            )
+        except (ConfigError, JDBCError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    @wrap_tool(monitor, "get_export_status")
+    def get_export_status(
+        export_id: Annotated[str, Field(description="导出任务 ID（start_export 返回）")]
+    ) -> dict[str, Any] | str:
+        """轮询查询异步导出任务状态（pending / running / succeeded / failed）。"""
+        task = export_mgr.status(export_id)
+        if not task:
+            return _err(f"导出任务不存在: {export_id}")
+        return task
+
+    @mcp.tool()
+    @wrap_tool(monitor, "list_exports")
+    def list_exports() -> dict[str, Any]:
+        """列出全部异步导出任务及状态（含 download_url）。"""
+        return {"exports": export_mgr.list()}

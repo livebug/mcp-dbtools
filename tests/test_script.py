@@ -142,7 +142,10 @@ def test_execute_script_write_allowed(tmp_path):
     m, ds, root = make_manager(tmp_path, [])
     script = root / "write2.sql"
     script.write_text("INSERT INTO t VALUES (1);", encoding="utf-8")
-    res = m.execute_script(ds, str(script), read_only=False)
+    # 非只读且写操作需 confirm=True 二次确认
+    with pytest.raises(JDBCError):
+        m.execute_script(ds, str(script), read_only=False)
+    res = m.execute_script(ds, str(script), read_only=False, confirm=True)
     assert res["results"][0]["ok"] is True
 
 

@@ -94,21 +94,21 @@ def test_args_nested_dict_preserved(tmp_path):
     assert row["args"]["params"] == {"V_DATE": "2026-08-08", "n": 3, "tags": ["a", "b"]}
 
 
-def test_wrap_tool_records(tmp_path):
+async def test_wrap_tool_records(tmp_path):
     m, _ = _mk_monitor(tmp_path)
 
     @wrap_tool(m, "demo")
     def demo(x: int) -> int:
         return x * 2
 
-    assert demo(x=3) == 6
+    assert await demo(x=3) == 6
     hist = m.execution_history(1)
     assert hist[0]["tool"] == "demo"
     assert hist[0]["ok"] is True
     assert hist[0]["args"] == {"x": 3}
 
 
-def test_wrap_tool_records_error(tmp_path):
+async def test_wrap_tool_records_error(tmp_path):
     m, _ = _mk_monitor(tmp_path)
 
     @wrap_tool(m, "boom")
@@ -116,13 +116,13 @@ def test_wrap_tool_records_error(tmp_path):
         raise ValueError("oops")
 
     with pytest.raises(ValueError):
-        boom()
+        await boom()
     hist = m.execution_history(1)
     assert hist[0]["ok"] is False
     assert "oops" in hist[0]["error"]
 
 
-def test_wrap_tool_records_business_error(tmp_path):
+async def test_wrap_tool_records_business_error(tmp_path):
     """工具返回 ❌ 错误字符串时应记为失败（业务错误）。"""
     m, _ = _mk_monitor(tmp_path)
 
@@ -132,10 +132,10 @@ def test_wrap_tool_records_business_error(tmp_path):
             return "❌ 查询失败: bad sql"
         return "ok"
 
-    assert maybe_fail(False) == "ok"
+    assert await maybe_fail(False) == "ok"
     assert m.execution_history(1)[0]["ok"] is True
 
-    maybe_fail(True)
+    await maybe_fail(True)
     hist = m.execution_history(1)
     assert hist[0]["ok"] is False
     assert "bad sql" in hist[0]["error"]

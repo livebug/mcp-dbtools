@@ -119,16 +119,64 @@ docker exec gaussdb bash -c \
 | --- | --- |
 | `list_datasources` | 列出已配置数据源（不含密码） |
 | `test_connection` | 测试 JDBC 连接，返回产品与版本 |
-| `execute_query` | 执行只读 SQL，返回列 + 行（含 `execution_time_ms` 耗时） |
+| `execute_query` | 执行 SQL（默认只读，写操作需 `confirm`；默认返回 300 行） |
 | `execute_script` | **执行 SQL 脚本文件**，支持 `${V_DATE}` 等参数占位符 |
 | `list_schemas` | 列出 schema / 数据库 |
 | `list_tables` | 列出表（可按 schema、表名过滤） |
 | `describe_table` | 查看表结构 |
 | `get_status` | **监控**：数据源 JDBC 状态、JVM/进程内存、工具统计、运行时长 |
 | `get_datasource_status` | **监控**：单个数据源连接/查询/错误/平均耗时 |
+| `get_circuit_status` | **监控**：数据源熔断状态（是否熔断、失败次数、冷却剩余） |
 | `get_execution_history` | **审计**：查询工具/SQL 执行历史（按工具、成败过滤） |
+| `start_export` | **大数据量异步导出**：发起导出（自定义分隔符）→ 返回 `export_id` |
+| `get_export_status` | **导出**：轮询导出任务状态（pending/running/succeeded/failed） |
+| `list_exports` | **导出**：列出全部导出任务及下载地址 |
 
 > 安全：工具只能访问 `datasources.json` 中预配置的连接，无法通过参数注入任意 JDBC URL。
+
+## 性能与安全
+
+### 连接池与并发
+- 每个数据源维护 **JDBC 连接池**（默认 2 个连接，`MCP_DBTOOLS_POOL_SIZE` 可调），多客户并发请求复用连接。
+- 工具异步执行（线程池），不阻塞事件循环，**支持多客户端并发调用**。
+
+### SQL 注入与危险操作
+- MCP 本质是执行 SQL（LLM 查询数据库），无法对用户 SQL 做参数化防注入；通过**多层缓解**控制风险：
+  - 数据源白名单：工具只能连 `datasources.json` 预配置的连接；
+  - **写操作二次确认**：`DELETE/UPDATE/INSERT/DROP/TRUNCATE` 等默认拦截，需显式 `confirm=true` 才执行（并记审计）；
+  - `execute_script` 默认只读，脚本路径限定在脚本根目录内（防目录穿越）；
+  - `${VAR}` 参数替换：来源限 `params` 与环境变量，缺失即报错。
+- 全部调用写入审计（含调用方 IP / UA / SQL / 耗时）。
+
+### 熔断机制
+- 数据源**连续失败 N 次**（默认 3，可配）触发熔断，期间请求快速失败（不连库），冷却期后自动恢复（半开试探）。
+- 查看：`get_circuit_status` 工具或 `/metrics`。
+
+### 大数据量查询限制
+- `execute_query` **默认最多返回 300 行**（`MCP_DBTOOLS_MAX_ROWS`），`limit` 参数上限 10000（`MCP_DBTOOLS_MAX_ROWS_LIMIT`），**不支持一次性拉全量大数据**，防止 OOM 与接口超时。
+
+## 大数据量异步导出（start_export）
+
+当结果超过查询上限、需要完整数据时，使用**异步导出**（后台线程逐批写文件，不占内存）：
+
+```python
+# 1) 发起导出（只导出数据到文本文件，分隔符自定义，默认逗号）
+start_export(datasource="gaussdb_test", sql="SELECT ...", delimiter=",", filename="report")
+# -> {"id": "xxx", "status": "running", "download_url": "/export/xxx/download"}
+
+# 2) 轮询检查
+get_export_status(export_id="xxx")
+# -> {"status": "succeeded", "rows": 100000, "columns": [...], ...}
+
+# 3) 完成后下载
+GET /export/{id}/download
+```
+
+约定：
+- **只导出数据**（UTF-8 文本），字段用分隔符拼接（值含分隔符/引号/换行时按 RFC4180 加引号转义）；
+- **CSV / Excel 等格式由客户端自行处理**，服务端不生成二进制格式；
+- 分隔符可自定义（`\t`、`|`、`,` 等），表头行可选；
+- 导出上限 `MCP_DBTOOLS_EXPORT_MAX_ROWS`（默认 10 万）。
 
 ## 脚本执行（execute_script）
 

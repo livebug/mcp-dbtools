@@ -370,13 +370,14 @@ def _is_err_result(result: Any) -> bool:
 
 
 def wrap_tool(monitor: Monitor, name: str):
-    """装饰器：包装 MCP 工具函数，自动记录执行历史与审计（含客户端 IP/UA）。"""
+    """装饰器：包装 MCP 工具函数（异步执行于线程池，支持多客户并发），自动记录审计。"""
 
     def deco(fn):
+        import asyncio
         import functools
 
         @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             t0 = time.monotonic()
             call_args: dict[str, Any] = {}
             if args:  # 位置参数（MCP 客户端通常全用关键字）
@@ -384,7 +385,7 @@ def wrap_tool(monitor: Monitor, name: str):
             call_args.update(kwargs)
             client = get_client_info()
             try:
-                result = fn(*args, **kwargs)
+                result = await asyncio.to_thread(fn, *args, **kwargs)
                 is_err = _is_err_result(result)
                 monitor.record_tool_call(
                     name, call_args, time.monotonic() - t0,

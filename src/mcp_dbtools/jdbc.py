@@ -14,6 +14,7 @@ import os
 import re
 import threading
 import time as _time
+from collections import deque
 from contextlib import contextmanager
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -134,10 +135,14 @@ class JDBCManager:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.drivers_dir = Path(settings.drivers_dir)
-        self._connections: dict[str, jaydebeapi.Connection] = {}
         self._locks: dict[str, threading.RLock] = {}
         self._jar_cache: dict[str, list[str]] = {}
         self._meta_cache: dict[str, Any] = {}
+        # 连接池：每数据源最多 pool_size 个空闲连接
+        self._pools: dict[str, deque] = {}
+        self._pool_size = max(1, settings.pool_size)
+        # 熔断状态：name -> {failures, open_until, half_open}
+        self._circuits: dict[str, dict[str, Any]] = {}
         # 每个数据源的连接/执行统计（监控用）
         self._ds_stats: dict[str, dict[str, Any]] = {}
 
@@ -221,19 +226,34 @@ class JDBCManager:
         conn.jconn.setAutoCommit(True)
         return conn
 
-    def _get_connection(self, ds: DataSource) -> jaydebeapi.Connection:
+    def _acquire(self, ds: DataSource) -> jaydebeapi.Connection:
+        """从连接池获取一个可用连接（无则新建）。"""
         with self._lock_for(ds.name):
-            conn = self._connections.get(ds.name)
-            if conn is None or not self._is_alive(conn):
+            pool = self._pools.get(ds.name) or deque()
+            while pool:
+                conn = pool.popleft()
+                if self._is_alive(conn):
+                    self._touch(ds.name, connected=True)
+                    return conn
                 try:
-                    if conn is not None:
-                        conn.close()
+                    conn.close()
                 except Exception:  # noqa: BLE001
                     pass
-                conn = self._new_connection(ds)
-                self._connections[ds.name] = conn
+            conn = self._new_connection(ds)
             self._touch(ds.name, connected=True)
             return conn
+
+    def _release(self, ds: DataSource, conn: jaydebeapi.Connection) -> None:
+        """归还连接到连接池（池满则关闭）。"""
+        with self._lock_for(ds.name):
+            pool = self._pools.setdefault(ds.name, deque())
+            if len(pool) < self._pool_size:
+                pool.append(conn)
+            else:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
 
     @staticmethod
     def _is_alive(conn: jaydebeapi.Connection) -> bool:
@@ -250,8 +270,8 @@ class JDBCManager:
 
     @contextmanager
     def cursor(self, ds: DataSource) -> Iterator[Any]:
-        """获取数据源游标（自动建立/复用连接）。"""
-        conn = self._get_connection(ds)
+        """获取数据源游标（连接池获取/归还）。"""
+        conn = self._acquire(ds)
         cur = conn.cursor()
         try:
             yield cur
@@ -260,17 +280,73 @@ class JDBCManager:
                 cur.close()
             except Exception:  # noqa: BLE001
                 pass
+            self._release(ds, conn)
+
+    # ------------------------------------------------------------------
+    # 熔断
+    # ------------------------------------------------------------------
+    def _check_circuit(self, name: str) -> None:
+        c = self._circuits.get(name)
+        if not c:
+            return
+        now = _time.time()
+        if c["open_until"] and now < c["open_until"]:
+            raise JDBCError(
+                f"数据源 {name} 处于熔断状态（连续失败 {c['failures']} 次），"
+                f"请 {int(c['open_until'] - now) + 1}s 后重试"
+            )
+        if c["open_until"] and now >= c["open_until"]:
+            c["open_until"] = 0.0
+            c["half_open"] = True  # 半开：放行一次试探
+
+    def _record_success(self, name: str) -> None:
+        c = self._circuits.setdefault(name, {"failures": 0, "open_until": 0.0, "half_open": False})
+        c["failures"] = 0
+        c["half_open"] = False
+        c["open_until"] = 0.0
+
+    def _record_failure(self, name: str) -> None:
+        c = self._circuits.setdefault(name, {"failures": 0, "open_until": 0.0, "half_open": False})
+        c["failures"] += 1
+        if c["failures"] >= self.settings.circuit_fail_threshold:
+            c["open_until"] = _time.time() + self.settings.circuit_cooldown
+            c["half_open"] = False
+
+    def circuit_status(self, name: str) -> dict[str, Any]:
+        """查询数据源熔断状态（监控用）。"""
+        c = self._circuits.get(name)
+        if not c:
+            return {"name": name, "open": False, "failures": 0}
+        now = _time.time()
+        return {
+            "name": name,
+            "open": bool(c["open_until"] and now < c["open_until"]),
+            "failures": c["failures"],
+            "half_open": c.get("half_open", False),
+            "cooldown_left_seconds": max(0, int(c["open_until"] - now)) if c["open_until"] else 0,
+        }
 
     # ------------------------------------------------------------------
     # 查询
     # ------------------------------------------------------------------
     def execute_query(
-        self, ds: DataSource, sql: str, limit: int | None = None
+        self, ds: DataSource, sql: str, limit: int | None = None, confirm: bool = False
     ) -> dict[str, Any]:
-        """执行只读 SQL，返回 {columns, rows, row_count, truncated}。"""
+        """执行 SQL，返回 {columns, rows, row_count, truncated}。
+
+        - 写操作（DELETE/UPDATE/INSERT/DROP 等）默认拦截，需 confirm=True 才执行；
+        - limit 上限受 max_rows_limit 限制，默认返回 max_rows 条（防一次性拉大数据量）。
+        """
         limit = limit if limit is not None else self.settings.max_rows
+        limit = min(max(1, limit), self.settings.max_rows_limit)
         if not sql or not sql.strip():
             raise JDBCError("SQL 不能为空")
+        if _sql_kind(sql) == "write" and not confirm:
+            raise JDBCError(
+                "检测到写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
+                "如确认执行请传 confirm=true（将记录审计）"
+            )
+        self._check_circuit(ds.name)
         t0 = _time.monotonic()
         # 将 limit 应用到内部以便批量抓取（LIMIT 语法差异大，故仅做客户端截断）
         try:
@@ -288,12 +364,15 @@ class JDBCManager:
                         rows = rows[:limit]
                         truncated = True
                         break
+            self._record_success(ds.name)
         except JDBCError:
+            self._record_failure(ds.name)
             with self._lock_for(ds.name):
                 st = self._stats(ds.name)
                 st["error_count"] += 1
             raise
         except Exception as exc:  # noqa: BLE001
+            self._record_failure(ds.name)
             with self._lock_for(ds.name):
                 st = self._stats(ds.name)
                 st["error_count"] += 1
@@ -312,6 +391,7 @@ class JDBCManager:
             "row_count": len(rows),
             "truncated": truncated,
             "execution_time_ms": round(cost_ms, 2),
+            "max_allowed": self.settings.max_rows_limit,
         }
 
     # ------------------------------------------------------------------
@@ -319,14 +399,19 @@ class JDBCManager:
     # ------------------------------------------------------------------
     def test_connection(self, ds: DataSource) -> dict[str, Any]:
         """测试连接并返回数据库产品信息。"""
-        conn = self._get_connection(ds)
+        self._check_circuit(ds.name)
+        conn = self._acquire(ds)
         try:
             meta = conn.jconn.getMetaData()
             product = str(meta.getDatabaseProductName())
             version = str(meta.getDatabaseProductVersion())
+            self._record_success(ds.name)
         except Exception as exc:  # noqa: BLE001
+            self._record_failure(ds.name)
             logger.warning("读取数据库元数据失败: %s", exc)
             product, version = ds.type, "unknown"
+        finally:
+            self._release(ds, conn)
         return {
             "datasource": ds.name,
             "ok": True,
@@ -435,12 +520,13 @@ class JDBCManager:
         return str(row[0]) if row else "public"
 
     def close_all(self) -> None:
-        for name, conn in self._connections.items():
-            try:
-                conn.close()
-            except Exception:  # noqa: BLE001
-                pass
-        self._connections.clear()
+        for name, pool in self._pools.items():
+            for conn in pool:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        self._pools.clear()
         for name in self._ds_stats:
             self._ds_stats[name]["connected"] = False
 
@@ -469,11 +555,13 @@ class JDBCManager:
         read_only: bool = True,
         limit: int | None = None,
         env: dict[str, str] | None = None,
+        confirm: bool = False,
     ) -> dict[str, Any]:
         """执行 SQL 脚本文件，支持 ${VAR} 参数占位符。
 
         参数来源优先级：params -> 环境变量 -> 缺失报错。
-        read_only=True 时仅允许 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 语句。
+        read_only=True 时仅允许 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 语句；
+        read_only=False 且脚本含写操作（DELETE/UPDATE 等）时需 confirm=True 二次确认。
         任一语句失败即停止后续。
         """
         p = self.resolve_script_file(script_path)
@@ -494,8 +582,19 @@ class JDBCManager:
                     raise JDBCError(
                         f"只读模式禁止执行非查询语句（如需执行请设 read_only=false）: {first}"
                     )
+        else:
+            # 非只读模式：脚本含写操作时需二次确认
+            if any(_sql_kind(s) == "write" for s in statements) and not confirm:
+                raise JDBCError(
+                    "脚本包含写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
+                    "如确认执行请传 read_only=false 且 confirm=true（将记录审计）"
+                )
 
-        limit = limit if limit is not None else self.settings.max_rows
+        self._check_circuit(ds.name)
+        limit = min(
+            limit if limit is not None else self.settings.max_rows,
+            self.settings.max_rows_limit,
+        )
         results: list[dict[str, Any]] = []
         t0_total = _time.monotonic()
         for idx, sql in enumerate(statements, 1):
@@ -529,12 +628,14 @@ class JDBCManager:
                         rec["affected_rows"] = (
                             int(cur.rowcount) if cur.rowcount is not None and cur.rowcount >= 0 else 0
                         )
+                self._record_success(ds.name)
                 with self._lock_for(ds.name):
                     st = self._stats(ds.name)
                     st["query_count"] += 1
                     st["rows_returned"] += len(rec.get("rows", []))
                     st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
             except Exception as exc:  # noqa: BLE001
+                self._record_failure(ds.name)
                 rec["ok"] = False
                 rec["error"] = str(exc)
                 with self._lock_for(ds.name):
@@ -632,3 +733,19 @@ def _is_readonly(sql: str) -> bool:
     """判断语句是否只读（SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 开头）。"""
     s = sql.strip().lower()
     return s.startswith(("select", "show", "describe", "desc ", "explain", "with"))
+
+
+_WRITE_PREFIXES = (
+    "insert", "update", "delete", "drop", "truncate", "alter", "create",
+    "grant", "revoke", "merge", "replace", "call", "commit", "rollback",
+    "vacuum", "copy", "comment", "reindex",
+)
+
+
+def _sql_kind(sql: str) -> str:
+    """粗略识别语句类型：write / read（依据首个关键字，用于危险操作拦截）。"""
+    s = sql.strip().lstrip("(").lower()
+    for kw in _WRITE_PREFIXES:
+        if s.startswith(kw):
+            return "write"
+    return "read"

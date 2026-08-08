@@ -20,6 +20,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .audit_page import AUDIT_HTML
 from .config import ConfigError, load_settings
+from .export import ExportManager
 from .jdbc import JDBCManager
 from .monitor import Monitor, set_client_info
 from .tools import register_tools
@@ -31,14 +32,15 @@ _mcp: FastMCP | None = None
 _manager: JDBCManager | None = None
 
 
-def _build_core(settings: Any) -> tuple[FastMCP, JDBCManager, Monitor]:
+def _build_core(settings: Any) -> tuple[FastMCP, JDBCManager, Monitor, ExportManager]:
     mcp = FastMCP(
         "mcp-dbtools",
         instructions=(
             "数据库 MCP 服务：可通过 JDBC 连接 TDH(Inceptor)、GaussDB/openGauss 等数据源。"
             "先调用 list_datasources 查看可用数据源，再用 execute_query 执行只读 SQL，"
             "list_schemas / list_tables / describe_table 查看元数据；"
-            "get_status / get_execution_history 查看监控与审计。"
+            "get_status / get_execution_history 查看监控与审计；"
+            "大数据量用 start_export 异步导出。"
         ),
         host=settings.host,
         port=settings.port,
@@ -49,8 +51,13 @@ def _build_core(settings: Any) -> tuple[FastMCP, JDBCManager, Monitor]:
         audit_file=settings.audit_file,
         audit_db=settings.audit_db,
     )
-    register_tools(mcp, settings, manager, monitor)
-    return mcp, manager, monitor
+    export_mgr = ExportManager(
+        export_dir=settings.export_dir,
+        max_rows=settings.export_max_rows,
+        jdbc_manager=manager,
+    )
+    register_tools(mcp, settings, manager, monitor, export_mgr)
+    return mcp, manager, monitor, export_mgr
 
 
 def build_app(settings: Any):
@@ -66,7 +73,7 @@ def build_app(settings: Any):
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    mcp, manager, monitor = _build_core(settings)
+    mcp, manager, monitor, export_mgr = _build_core(settings)
 
     if settings.transport == "sse":
         app = mcp.sse_app()
@@ -148,6 +155,18 @@ def build_app(settings: Any):
 
     app.router.routes.insert(0, Route("/audit/api", audit_api))
     app.router.routes.insert(0, Route("/audit", audit_page))
+
+    # ---------- 导出文件下载 ----------
+    from starlette.responses import FileResponse
+
+    async def export_download(request: Request):
+        eid = request.path_params.get("id", "")
+        path = export_mgr.get_file_path(eid)
+        if path is None:
+            return JSONResponse({"error": "导出文件不存在或任务未完成"}, status_code=404)
+        return FileResponse(path, media_type="text/plain", filename=path.name)
+
+    app.router.routes.insert(0, Route("/export/{id}/download", export_download))
 
     # ---------- 记录客户端 IP / UA（contextvar，随请求上下文传递到工具）----------
     class ClientInfoMiddleware:
@@ -246,7 +265,7 @@ def run_http(settings: Any) -> None:
 
 
 def run_stdio(settings: Any) -> None:
-    mcp, _, _ = _build_core(settings)
+    mcp, _, _, _ = _build_core(settings)
     mcp.run(transport="stdio")
 
 
