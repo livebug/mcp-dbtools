@@ -36,6 +36,10 @@ module.exports = {
         MCP_DBTOOLS_CONFIG: "/opt/mcp-dbtools/config/datasources.json",
         MCP_DBTOOLS_DRIVERS_DIR: "/opt/mcp-dbtools/drivers",
         MCP_DBTOOLS_MAX_ROWS: "1000",
+        // 监控与审计
+        MCP_DBTOOLS_HISTORY_SIZE: "500",
+        MCP_DBTOOLS_AUDIT_FILE: "/opt/mcp-dbtools/logs/audit.jsonl",
+        MCP_DBTOOLS_METRICS_ENABLED: "true",
         // 鉴权 Token（留空表示不鉴权）。建议通过 pm2 env 或系统环境注入
         MCP_DBTOOLS_AUTH_TOKEN: "",
         // 数据源密码（{ENV:VAR} 引用，避免明文写入 datasources.json）

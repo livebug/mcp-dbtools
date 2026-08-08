@@ -119,12 +119,42 @@ docker exec gaussdb bash -c \
 | --- | --- |
 | `list_datasources` | 列出已配置数据源（不含密码） |
 | `test_connection` | 测试 JDBC 连接，返回产品与版本 |
-| `execute_query` | 执行只读 SQL，返回列 + 行（限 `limit`） |
+| `execute_query` | 执行只读 SQL，返回列 + 行（含 `execution_time_ms` 耗时） |
 | `list_schemas` | 列出 schema / 数据库 |
 | `list_tables` | 列出表（可按 schema、表名过滤） |
 | `describe_table` | 查看表结构 |
+| `get_status` | **监控**：数据源 JDBC 状态、JVM/进程内存、工具统计、运行时长 |
+| `get_datasource_status` | **监控**：单个数据源连接/查询/错误/平均耗时 |
+| `get_execution_history` | **审计**：查询工具/SQL 执行历史（按工具、成败过滤） |
 
 > 安全：工具只能访问 `datasources.json` 中预配置的连接，无法通过参数注入任意 JDBC URL。
+
+## 监控与审计
+
+### 监控指标
+- **JDBC 状态**：每个数据源 `connected` / `connected_at` / `last_active` / `query_count` / `error_count` / `rows_returned` / `total_query_time_ms` / `avg_query_time_ms`
+- **内存**：JVM 堆内存（`used`/`committed`/`max`）+ Python 进程 RSS
+- **执行耗时**：`execute_query` 返回 `execution_time_ms`；工具级统计见 `get_status`/`/metrics`
+
+### HTTP /metrics 端点
+运维采集用（JSON），默认开启：
+
+```bash
+curl http://<服务器IP>:8000/metrics
+# 返回: 数据源状态 / 内存 / 工具调用统计 / 运行时长
+```
+
+### 审计日志（JSONL）
+每次工具调用都会记录到 `logs/audit.jsonl`（时间、工具、参数、耗时、成败、错误信息），供事后审计与排障。可通过 `get_execution_history` 工具在线查询最近 N 条。
+
+### 配置项（.env）
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `MCP_DBTOOLS_HISTORY_SIZE` | `500` | 内存执行历史条数 |
+| `MCP_DBTOOLS_AUDIT_FILE` | `logs/audit.jsonl` | 审计日志路径，留空关闭落盘 |
+| `MCP_DBTOOLS_METRICS_ENABLED` | `true` | 是否开放 `/metrics` |
+
+> 提示：审计日志会记录 SQL 参数（超长自动截断）。若对敏感查询有顾虑，可关闭落盘（`MCP_DBTOOLS_AUDIT_FILE=`），仅保留内存历史。
 
 ## 客户端接入
 

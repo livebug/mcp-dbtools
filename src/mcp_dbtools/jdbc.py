@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time as _time
 from contextlib import contextmanager
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -135,6 +136,47 @@ class JDBCManager:
         self._locks: dict[str, threading.RLock] = {}
         self._jar_cache: dict[str, list[str]] = {}
         self._meta_cache: dict[str, Any] = {}
+        # 每个数据源的连接/执行统计（监控用）
+        self._ds_stats: dict[str, dict[str, Any]] = {}
+
+    # ------------------------------------------------------------------
+    # 监控统计
+    # ------------------------------------------------------------------
+    def _stats(self, name: str) -> dict[str, Any]:
+        if name not in self._ds_stats:
+            self._ds_stats[name] = {
+                "name": name,
+                "connected": False,
+                "connected_at": None,
+                "last_active": None,
+                "query_count": 0,
+                "error_count": 0,
+                "rows_returned": 0,
+                "total_query_time_ms": 0.0,
+                "avg_query_time_ms": 0.0,
+            }
+        return self._ds_stats[name]
+
+    def _touch(self, name: str, *, connected: bool | None = None) -> dict[str, Any]:
+        st = self._stats(name)
+        st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
+        if connected is not None:
+            st["connected"] = connected
+            if connected:
+                st["connected_at"] = st["last_active"]
+        return st
+
+    def ds_status(self, name: str) -> dict[str, Any]:
+        """单个数据源的连接/执行状态。"""
+        with self._lock_for(name):
+            st = dict(self._stats(name))
+        qc = st["query_count"]
+        st["avg_query_time_ms"] = round(st["total_query_time_ms"] / qc, 2) if qc else 0.0
+        return st
+
+    def all_status(self) -> list[dict[str, Any]]:
+        """所有数据源的连接/执行状态。"""
+        return [self.ds_status(ds.name) for ds in self.settings.datasources]
 
     # ------------------------------------------------------------------
     # 连接管理
@@ -188,6 +230,7 @@ class JDBCManager:
                     pass
                 conn = self._new_connection(ds)
                 self._connections[ds.name] = conn
+            self._touch(ds.name, connected=True)
             return conn
 
     @staticmethod
@@ -226,6 +269,7 @@ class JDBCManager:
         limit = limit if limit is not None else self.settings.max_rows
         if not sql or not sql.strip():
             raise JDBCError("SQL 不能为空")
+        t0 = _time.monotonic()
         # 将 limit 应用到内部以便批量抓取（LIMIT 语法差异大，故仅做客户端截断）
         try:
             with self.cursor(ds) as cur:
@@ -243,15 +287,29 @@ class JDBCManager:
                         truncated = True
                         break
         except JDBCError:
+            with self._lock_for(ds.name):
+                st = self._stats(ds.name)
+                st["error_count"] += 1
             raise
         except Exception as exc:  # noqa: BLE001
+            with self._lock_for(ds.name):
+                st = self._stats(ds.name)
+                st["error_count"] += 1
             raise JDBCError(f"执行 SQL 失败 ({ds.name}): {exc}") from exc
+        cost_ms = (_time.monotonic() - t0) * 1000.0
+        with self._lock_for(ds.name):
+            st = self._stats(ds.name)
+            st["query_count"] += 1
+            st["rows_returned"] += len(rows)
+            st["total_query_time_ms"] += cost_ms
+            st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
         return {
             "datasource": ds.name,
             "columns": cols,
             "rows": _rows_to_jsonable(rows),
             "row_count": len(rows),
             "truncated": truncated,
+            "execution_time_ms": round(cost_ms, 2),
         }
 
     # ------------------------------------------------------------------
@@ -381,6 +439,8 @@ class JDBCManager:
             except Exception:  # noqa: BLE001
                 pass
         self._connections.clear()
+        for name in self._ds_stats:
+            self._ds_stats[name]["connected"] = False
 
 
 def _quote(ident: str) -> str:

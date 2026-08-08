@@ -20,6 +20,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .config import ConfigError, load_settings
 from .jdbc import JDBCManager
+from .monitor import Monitor
 from .tools import register_tools
 
 logger = logging.getLogger(__name__)
@@ -29,19 +30,25 @@ _mcp: FastMCP | None = None
 _manager: JDBCManager | None = None
 
 
-def _create_mcp(settings: Any) -> FastMCP:
+def _build_core(settings: Any) -> tuple[FastMCP, JDBCManager, Monitor]:
     mcp = FastMCP(
         "mcp-dbtools",
         instructions=(
             "数据库 MCP 服务：可通过 JDBC 连接 TDH(Inceptor)、GaussDB/openGauss 等数据源。"
             "先调用 list_datasources 查看可用数据源，再用 execute_query 执行只读 SQL，"
-            "list_schemas / list_tables / describe_table 查看元数据。"
+            "list_schemas / list_tables / describe_table 查看元数据；"
+            "get_status / get_execution_history 查看监控与审计。"
         ),
         host=settings.host,
         port=settings.port,
     )
-    register_tools(mcp, settings, JDBCManager(settings))
-    return mcp
+    manager = JDBCManager(settings)
+    monitor = Monitor(
+        history_size=settings.history_size,
+        audit_file=settings.audit_file,
+    )
+    register_tools(mcp, settings, manager, monitor)
+    return mcp, manager, monitor
 
 
 def build_app(settings: Any):
@@ -57,7 +64,7 @@ def build_app(settings: Any):
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    mcp = _create_mcp(settings)
+    mcp, manager, monitor = _build_core(settings)
 
     if settings.transport == "sse":
         app = mcp.sse_app()
@@ -74,8 +81,30 @@ def build_app(settings: Any):
             }
         )
 
-    # 在 MCP 路由之前插入 /health（Starlette 按顺序匹配）
+    async def metrics(request: Request):
+        """监控指标（JSON）：数据源状态、内存、工具统计。"""
+        return JSONResponse(
+            {
+                "service": "mcp-dbtools",
+                "uptime_seconds": round(monitor.uptime_seconds(), 1),
+                "datasources": manager.all_status(),
+                "memory_mb": {
+                    "process_rss": Monitor.process_memory_mb(),
+                    "jvm_heap": Monitor.jvm_memory_mb(),
+                },
+                "tool_summary": monitor.tool_summary(),
+                "config": {
+                    "history_size": settings.history_size,
+                    "audit_file": settings.audit_file,
+                    "max_rows": settings.max_rows,
+                },
+            }
+        )
+
+    # 在 MCP 路由之前插入 /health、/metrics（Starlette 按顺序匹配）
     app.router.routes.insert(0, Route("/health", health))
+    if settings.metrics_enabled:
+        app.router.routes.insert(0, Route("/metrics", metrics))
 
     # 可选 Bearer Token 鉴权（作为纯 ASGI 包装器，保留 lifespan 透传）
     token = settings.auth_token
@@ -138,7 +167,7 @@ def run_http(settings: Any) -> None:
 
 
 def run_stdio(settings: Any) -> None:
-    mcp = _create_mcp(settings)
+    mcp, _, _ = _build_core(settings)
     mcp.run(transport="stdio")
 
 

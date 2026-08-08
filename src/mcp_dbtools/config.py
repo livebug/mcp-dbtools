@@ -93,6 +93,10 @@ class Settings:
     drivers_dir: str = "drivers"
     max_rows: int = 1000
     connect_timeout: int = 30
+    # ---- 监控与审计 ----
+    history_size: int = 500          # 执行历史环形缓冲条数
+    audit_file: str | None = "logs/audit.jsonl"  # 审计日志路径，空则关闭落盘
+    metrics_enabled: bool = True     # 是否开放 /metrics 端点
     datasources: list[DataSource] = field(default_factory=list)
 
 
@@ -123,6 +127,10 @@ def load_settings() -> Settings:
         drivers_dir=env.get("MCP_DBTOOLS_DRIVERS_DIR", "drivers"),
         max_rows=int(env.get("MCP_DBTOOLS_MAX_ROWS", "1000")),
         connect_timeout=int(env.get("MCP_DBTOOLS_CONNECT_TIMEOUT", "30")),
+        history_size=int(env.get("MCP_DBTOOLS_HISTORY_SIZE", "500")),
+        audit_file=env.get("MCP_DBTOOLS_AUDIT_FILE") or None,
+        metrics_enabled=env.get("MCP_DBTOOLS_METRICS_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
     )
 
     raw = _load_json(cfg.config_path)
