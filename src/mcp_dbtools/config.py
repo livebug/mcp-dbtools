@@ -97,6 +97,8 @@ class Settings:
     history_size: int = 500          # 执行历史环形缓冲条数
     audit_file: str | None = "logs/audit.jsonl"  # 审计日志路径，空则关闭落盘
     metrics_enabled: bool = True     # 是否开放 /metrics 端点
+    # ---- 脚本执行 ----
+    script_root: str = "scripts/sql"  # SQL 脚本根目录（execute_script 限定于此）
     datasources: list[DataSource] = field(default_factory=list)
 
 
@@ -131,6 +133,7 @@ def load_settings() -> Settings:
         audit_file=env.get("MCP_DBTOOLS_AUDIT_FILE") or None,
         metrics_enabled=env.get("MCP_DBTOOLS_METRICS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
+        script_root=env.get("MCP_DBTOOLS_SCRIPT_ROOT", "scripts/sql"),
     )
 
     raw = _load_json(cfg.config_path)

@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 import threading
 import time as _time
 from contextlib import contextmanager
@@ -442,7 +444,191 @@ class JDBCManager:
         for name in self._ds_stats:
             self._ds_stats[name]["connected"] = False
 
+    # ------------------------------------------------------------------
+    # 脚本执行
+    # ------------------------------------------------------------------
+    def resolve_script_file(self, script_path: str) -> Path:
+        """解析并校验脚本文件位于脚本根目录内（防目录穿越）。"""
+        root = Path(self.settings.script_root).resolve()
+        p = Path(script_path).resolve()
+        if not p.is_file():
+            raise JDBCError(f"脚本文件不存在: {script_path}")
+        try:
+            p.relative_to(root)
+        except ValueError as exc:
+            raise JDBCError(
+                f"脚本必须在脚本根目录内（{root}），禁止执行目录外文件: {p}"
+            ) from exc
+        return p
+
+    def execute_script(
+        self,
+        ds: DataSource,
+        script_path: str,
+        params: dict[str, Any] | None = None,
+        read_only: bool = True,
+        limit: int | None = None,
+        env: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """执行 SQL 脚本文件，支持 ${VAR} 参数占位符。
+
+        参数来源优先级：params -> 环境变量 -> 缺失报错。
+        read_only=True 时仅允许 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 语句。
+        任一语句失败即停止后续。
+        """
+        p = self.resolve_script_file(script_path)
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise JDBCError(f"读取脚本失败: {exc}") from exc
+
+        resolved = resolve_script_params(text, params, env)
+        statements = split_sql_script(resolved)
+        if not statements:
+            raise JDBCError(f"脚本 {p} 中没有可执行的 SQL 语句")
+
+        if read_only:
+            for s in statements:
+                if not _is_readonly(s):
+                    first = s.strip().splitlines()[0][:80] if s.strip() else ""
+                    raise JDBCError(
+                        f"只读模式禁止执行非查询语句（如需执行请设 read_only=false）: {first}"
+                    )
+
+        limit = limit if limit is not None else self.settings.max_rows
+        results: list[dict[str, Any]] = []
+        t0_total = _time.monotonic()
+        for idx, sql in enumerate(statements, 1):
+            rec: dict[str, Any] = {
+                "index": idx,
+                "ok": True,
+                "statement_preview": sql[:120],
+            }
+            t0 = _time.monotonic()
+            try:
+                with self.cursor(ds) as cur:
+                    cur.execute(sql)
+                    if cur.description:
+                        cols = [d[0] for d in cur.description]
+                        rows: list[tuple] = []
+                        truncated = False
+                        while True:
+                            batch = cur.fetchmany(500)
+                            if not batch:
+                                break
+                            rows.extend(batch)
+                            if len(rows) >= limit:
+                                rows = rows[:limit]
+                                truncated = True
+                                break
+                        rec["columns"] = cols
+                        rec["rows"] = _rows_to_jsonable(rows)
+                        rec["row_count"] = len(rows)
+                        rec["truncated"] = truncated
+                    else:
+                        rec["affected_rows"] = (
+                            int(cur.rowcount) if cur.rowcount is not None and cur.rowcount >= 0 else 0
+                        )
+                with self._lock_for(ds.name):
+                    st = self._stats(ds.name)
+                    st["query_count"] += 1
+                    st["rows_returned"] += len(rec.get("rows", []))
+                    st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
+            except Exception as exc:  # noqa: BLE001
+                rec["ok"] = False
+                rec["error"] = str(exc)
+                with self._lock_for(ds.name):
+                    self._stats(ds.name)["error_count"] += 1
+            rec["execution_time_ms"] = round((_time.monotonic() - t0) * 1000.0, 2)
+            results.append(rec)
+            if not rec["ok"]:
+                break  # 失败即停止后续语句
+
+        return {
+            "datasource": ds.name,
+            "script_path": str(p),
+            "params": params or {},
+            "statement_count": len(results),
+            "results": results,
+            "total_time_ms": round((_time.monotonic() - t0_total) * 1000.0, 2),
+        }
+
 
 def _quote(ident: str) -> str:
     """对标识符做基础转义，防止注入与语法错误。"""
     return ident.replace("`", "").replace(";", "")
+
+
+# ----------------------------------------------------------------------
+# 脚本解析与参数替换
+# ----------------------------------------------------------------------
+_PARAM_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def resolve_script_params(
+    text: str, params: dict[str, Any] | None = None, env: dict[str, str] | None = None
+) -> str:
+    """替换脚本中的 ${VAR} 占位符：优先 params，其次环境变量，缺失则报错。"""
+    params = params or {}
+    env = env if env is not None else os.environ
+    missing: list[str] = []
+
+    def _repl(m: re.Match[str]) -> str:
+        key = m.group(1)
+        if key in params:
+            return str(params[key])
+        if key in env:
+            return str(env[key])
+        missing.append(key)
+        return m.group(0)
+
+    out = _PARAM_RE.sub(_repl, text)
+    if missing:
+        raise JDBCError(
+            "缺少脚本参数，请在 params 或环境变量中提供: " + ", ".join(sorted(set(missing)))
+        )
+    return out
+
+
+def split_sql_script(text: str) -> list[str]:
+    """按分号拆分多条 SQL，忽略引号内分号与 -- 行注释。"""
+    statements: list[str] = []
+    current: list[str] = []
+    in_single = in_double = False
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "'" and not in_double:
+            in_single = not in_single
+            current.append(c)
+            i += 1
+            continue
+        if c == '"' and not in_single:
+            in_double = not in_double
+            current.append(c)
+            i += 1
+            continue
+        if c == "-" and i + 1 < n and text[i + 1] == "-" and not in_single and not in_double:
+            # 跳过 -- 行注释（不追加到当前语句）
+            while i < n and text[i] != "\n":
+                i += 1
+            continue
+        if c == ";" and not in_single and not in_double:
+            stmt = "".join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+            i += 1
+            continue
+        current.append(c)
+        i += 1
+    stmt = "".join(current).strip()
+    if stmt:
+        statements.append(stmt)
+    return statements
+
+
+def _is_readonly(sql: str) -> bool:
+    """判断语句是否只读（SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 开头）。"""
+    s = sql.strip().lower()
+    return s.startswith(("select", "show", "describe", "desc ", "explain", "with"))

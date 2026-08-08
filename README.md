@@ -120,6 +120,7 @@ docker exec gaussdb bash -c \
 | `list_datasources` | 列出已配置数据源（不含密码） |
 | `test_connection` | 测试 JDBC 连接，返回产品与版本 |
 | `execute_query` | 执行只读 SQL，返回列 + 行（含 `execution_time_ms` 耗时） |
+| `execute_script` | **执行 SQL 脚本文件**，支持 `${V_DATE}` 等参数占位符 |
 | `list_schemas` | 列出 schema / 数据库 |
 | `list_tables` | 列出表（可按 schema、表名过滤） |
 | `describe_table` | 查看表结构 |
@@ -128,6 +129,32 @@ docker exec gaussdb bash -c \
 | `get_execution_history` | **审计**：查询工具/SQL 执行历史（按工具、成败过滤） |
 
 > 安全：工具只能访问 `datasources.json` 中预配置的连接，无法通过参数注入任意 JDBC URL。
+
+## 脚本执行（execute_script）
+
+`execute_script` 可在服务器上执行 SQL 脚本文件，支持 `${VAR}` 参数占位符（如 `${V_DATE}`）。
+
+### 用法示例
+
+```python
+# MCP 客户端调用
+execute_script(
+    datasource="gaussdb_test",
+    script_path="scripts/sql/demo_daily.sql",   # 服务器上脚本根目录内的文件
+    params={"V_DATE": "2026-08-08"},            # 替换脚本中的 ${V_DATE}
+)
+```
+
+返回每条语句的 `columns` / `rows` / `row_count` / `execution_time_ms` 及总耗时。示例脚本见 `scripts/sql/demo_daily.sql`。
+
+### 参数占位符规则
+- 脚本中的 `${VAR}` 会被替换；来源优先级：`params` → 环境变量 → 缺失则报错（列出缺少的参数名）。
+- 参数值统一转字符串插入。
+
+### 安全约束
+- 脚本文件必须位于脚本根目录内（默认 `scripts/sql`，可用 `MCP_DBTOOLS_SCRIPT_ROOT` 配置），防止目录穿越读取任意文件。
+- 默认 `read_only=true`，仅允许 `SELECT / SHOW / DESCRIBE / EXPLAIN / WITH` 语句；需要执行写操作时显式传 `read_only=false`（请谨慎，最终由数据库侧权限控制）。
+- 多语句按分号拆分（忽略引号内分号与 `--` 行注释）；任一语句失败即停止后续。
 
 ## 监控与审计
 

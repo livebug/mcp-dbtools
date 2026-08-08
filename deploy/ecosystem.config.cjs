@@ -40,6 +40,8 @@ module.exports = {
         MCP_DBTOOLS_HISTORY_SIZE: "500",
         MCP_DBTOOLS_AUDIT_FILE: "/opt/mcp-dbtools/logs/audit.jsonl",
         MCP_DBTOOLS_METRICS_ENABLED: "true",
+        // 脚本执行根目录
+        MCP_DBTOOLS_SCRIPT_ROOT: "/opt/mcp-dbtools/scripts/sql",
         // 鉴权 Token（留空表示不鉴权）。建议通过 pm2 env 或系统环境注入
         MCP_DBTOOLS_AUTH_TOKEN: "",
         // 数据源密码（{ENV:VAR} 引用，避免明文写入 datasources.json）

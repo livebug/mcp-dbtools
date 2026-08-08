@@ -34,6 +34,8 @@ java -version 2>&1 | head -1
 echo "==> 拷贝离线包文件"
 mkdir -p "$INSTALL_DIR"
 cp -r "$HERE"/wheels "$HERE"/dist "$HERE"/drivers "$HERE"/config "$INSTALL_DIR/"
+mkdir -p "$INSTALL_DIR/scripts"
+cp -r "$HERE"/scripts/sql "$INSTALL_DIR/scripts/" 2>/dev/null || true
 cp "$HERE"/requirements.txt "$INSTALL_DIR/"
 cp "$HERE"/.env.example "$INSTALL_DIR/"
 cp "$HERE"/ecosystem.config.cjs "$INSTALL_DIR/"

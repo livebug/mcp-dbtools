@@ -68,6 +68,37 @@ def register_tools(
             return _err(str(exc))
 
     @mcp.tool()
+    @wrap_tool(monitor, "execute_script")
+    def execute_script(
+        datasource: DatasourceArg,
+        script_path: Annotated[
+            str, Field(description="服务器上的 SQL 脚本文件路径（须在脚本根目录内）")
+        ],
+        params: Annotated[
+            dict[str, Any] | None, Field(description="脚本参数，替换 ${V_DATE} 等占位符")
+        ] = None,
+        read_only: Annotated[
+            bool, Field(description="是否只允许只读语句（默认 true）")
+        ] = True,
+        limit: Annotated[
+            int, Field(default=1000, ge=1, le=10000, description="每条语句最多返回行数")
+        ] = 1000,
+    ) -> dict[str, Any] | str:
+        """执行服务器上的 SQL 脚本文件，支持 ${VAR} 参数占位符（如 ${V_DATE}）。
+
+        参数来源：params -> 环境变量 -> 缺失报错。脚本文件须位于脚本根目录
+        （默认 scripts/sql，可用 MCP_DBTOOLS_SCRIPT_ROOT 配置）内。
+        返回每条语句的列、行、耗时；默认只读模式。
+        """
+        try:
+            ds = get_datasource(settings, datasource)
+            return manager.execute_script(
+                ds, script_path, params=params, read_only=read_only, limit=limit
+            )
+        except (ConfigError, JDBCError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
     @wrap_tool(monitor, "list_schemas")
     def list_schemas(datasource: DatasourceArg) -> dict[str, Any] | str:
         """列出指定数据源下的所有 schema / 数据库。"""
