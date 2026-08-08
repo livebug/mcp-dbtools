@@ -1,0 +1,27 @@
+# 数据源配置（Docker Compose 内部网络用）
+# 在 compose 环境中，openGauss 通过服务名 opengauss:5432 访问。
+# 用法:  MCP_DBTOOLS_CONFIG=config/datasources.docker.json
+{
+  "datasources": [
+    {
+      "name": "gaussdb_test",
+      "type": "gaussdb",
+      "description": "compose 内部 openGauss 测试库",
+      "driver_class": "org.opengauss.Driver",
+      "jdbc_url": "jdbc:opengauss://opengauss:5432/gaussdb",
+      "username": "gaussdb",
+      "password": "{ENV:GAUSS_PASSWORD}",
+      "jars": ["opengauss-jdbc-5.0.0-og.jar"]
+    },
+    {
+      "name": "tdh_inceptor",
+      "type": "tdh",
+      "description": "TDH Inceptor（驱动 inceptor-jdbc.jar）",
+      "driver_class": "org.apache.hive.jdbc.HiveDriver",
+      "jdbc_url": "jdbc:hive2://tdh:10000/default",
+      "username": "tdh",
+      "password": "{ENV:TDH_PASSWORD}",
+      "jars": ["inceptor-jdbc.jar"]
+    }
+  ]
+}

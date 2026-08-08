@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-dbtools"
+version = "0.1.0"
+description = "MCP server for TDH (Transwarp Data Hub) and GaussDB / openGauss via JDBC"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "mcp>=1.9.0,<2.0.0",  # 使用成熟的 1.x FastMCP API
+    "jaydebeapi>=1.2.3",
+    "jpype1>=1.5.0",
+    "uvicorn>=0.30.0",
+    "starlette>=0.37.0",
+    "python-dotenv>=1.0.0",
+    "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.27.0",
+]
+
+[project.scripts]
+mcp-dbtools = "mcp_dbtools.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

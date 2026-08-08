@@ -1,0 +1,59 @@
+# =============================================================
+# mcp-dbtools 生产部署（Docker Compose）
+#   - mcp-dbtools : MCP 服务（HTTP 8000）
+#   - opengauss   : GaussDB 家族测试库（内部 5432，外部 15432）
+#
+# 启动:
+#   cp .env.example .env   # 并按需修改密码
+#   docker compose -f docker/compose.yml up -d --build
+#
+# 验证:
+#   curl http://localhost:8000/health
+# =============================================================
+services:
+  mcp-dbtools:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: mcp-dbtools:latest
+    container_name: mcp-dbtools
+    environment:
+      MCP_DBTOOLS_CONFIG: /app/config/datasources.docker.json
+      MCP_DBTOOLS_DRIVERS_DIR: /app/drivers
+      MCP_DBTOOLS_HOST: 0.0.0.0
+      MCP_DBTOOLS_PORT: 8000
+      MCP_DBTOOLS_TRANSPORT: streamable-http
+      MCP_DBTOOLS_AUTH_TOKEN: ${MCP_DBTOOLS_AUTH_TOKEN:-}
+      GAUSS_PASSWORD: ${GAUSS_PASSWORD:-Gauss@123}
+      TDH_PASSWORD: ${TDH_PASSWORD:-tdh}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../config:/app/config:ro
+      - ../drivers:/app/drivers:ro
+    depends_on:
+      opengauss:
+        condition: service_healthy
+    restart: unless-stopped
+
+  opengauss:
+    image: opengauss/opengauss:5.0.0
+    container_name: mcp-dbtools-gaussdb
+    environment:
+      GS_PASSWORD: ${GS_PASSWORD:-Gauss@123}
+      GS_USERNAME: gaussdb
+    ports:
+      - "15432:5432"
+    volumes:
+      - ./gaussdb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - gauss-data:/var/lib/opengauss
+    healthcheck:
+      test: ["CMD", "bash", "-c", "gsql -U gaussdb -d testdb -c 'select 1' >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  gauss-data:

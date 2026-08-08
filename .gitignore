@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# 环境与密钥
+.env
+*.pem
+*.key
+
+# 离线部署产物
+wheels/
+offline/
+*.tar.gz
+
+# JDBC 驱动 jar 包（用 scripts/download_drivers.py 下载）
+drivers/*.jar
+drivers/downloads/*.jar
+
+# 运行时
+*.log
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

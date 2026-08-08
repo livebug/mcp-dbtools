@@ -1,0 +1,9 @@
+# mcp-dbtools 运行时依赖（生产部署使用）
+# 注意: mcp 2.x 为全新 API，本项目使用成熟的 1.x FastMCP，请勿升级到 2.x
+mcp>=1.9.0,<2.0.0
+jaydebeapi>=1.2.3
+jpype1>=1.5.0
+uvicorn>=0.30.0
+starlette>=0.37.0
+python-dotenv>=1.0.0
+pydantic>=2.7.0

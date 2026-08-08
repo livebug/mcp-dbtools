@@ -1,0 +1,24 @@
+{
+  "datasources": [
+    {
+      "name": "gaussdb_test",
+      "type": "gaussdb",
+      "description": "Docker 测试库 gaussdb-local（openGauss 5.0）",
+      "driver_class": "org.opengauss.Driver",
+      "jdbc_url": "jdbc:opengauss://127.0.0.1:5432/gaussdb",
+      "username": "gaussdb",
+      "password": "{ENV:GAUSS_PASSWORD}",
+      "jars": ["opengauss-jdbc-5.0.0-og.jar"]
+    },
+    {
+      "name": "tdh_inceptor",
+      "type": "tdh",
+      "description": "TDH Inceptor 测试环境（驱动取自 tdh-standalone:2024.5）",
+      "driver_class": "org.apache.hive.jdbc.HiveDriver",
+      "jdbc_url": "jdbc:hive2://127.0.0.1:10000/default",
+      "username": "tdh",
+      "password": "{ENV:TDH_PASSWORD}",
+      "jars": ["inceptor-jdbc.jar"]
+    }
+  ]
+}

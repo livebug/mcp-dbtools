@@ -1,0 +1,32 @@
+# =============================================================
+# GaussDB / openGauss 测试库（Docker）
+# openGauss 是华为 openGauss 开源版，JDBC 协议与 GaussDB 兼容，
+# 可用来本地验证 MCP 的 GaussDB 通路。
+#
+# 启动:  docker compose -f docker/gaussdb/docker-compose.yml up -d
+# 连接:  jdbc:opengauss://localhost:15432/testdb
+#        用户 gaussdb / 密码 Gauss@123
+# =============================================================
+services:
+  opengauss:
+    image: opengauss/opengauss:5.0.0
+    container_name: mcp-dbtools-gaussdb
+    environment:
+      # openGauss 官方镜像要求 GS_PASSWORD 包含大小写字母+数字+符号
+      GS_PASSWORD: "Gauss@123"
+      GS_USERNAME: "gaussdb"
+    ports:
+      - "15432:5432"
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - gauss-data:/var/lib/opengauss
+    healthcheck:
+      test: ["CMD", "bash", "-c", "gsql -U gaussdb -d testdb -c 'select 1' >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  gauss-data:
