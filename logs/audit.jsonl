@@ -1,5 +1,0 @@
-{"ts": "2026-08-08T09:56:50.106+08:00", "tool": "execute_query", "args": {"datasource": "gaussdb_test", "sql": "SELECT count(*) AS c FROM employees", "limit": 1000}, "duration_ms": 664.2, "ok": true}
-{"ts": "2026-08-08T09:56:50.147+08:00", "tool": "execute_query", "args": {"datasource": "gaussdb_test", "sql": "SELECT department, count(*) n FROM employees GROUP BY department", "limit": 1000}, "duration_ms": 22.98, "ok": true}
-{"ts": "2026-08-08T09:56:50.158+08:00", "tool": "get_status", "args": {}, "duration_ms": 3.54, "ok": true}
-{"ts": "2026-08-08T09:56:50.167+08:00", "tool": "get_datasource_status", "args": {"datasource": "gaussdb_test"}, "duration_ms": 0.01, "ok": true}
-{"ts": "2026-08-08T09:56:50.229+08:00", "tool": "get_execution_history", "args": {"limit": 5, "tool": "execute_query", "ok": null}, "duration_ms": 0.01, "ok": true}
