@@ -92,12 +92,16 @@ class Monitor:
         history_size: int = 500,
         audit_file: str | None = "logs/audit.jsonl",
         audit_db: str | None = "logs/audit.db",
+        audit_max_bytes: int = 10 * 1024 * 1024,
+        audit_backup_count: int = 5,
     ):
         self._history: deque[dict[str, Any]] = deque(maxlen=max(1, history_size))
         self._lock = threading.RLock()
         self._started_at = time.time()
         self._tool_counts: dict[str, dict[str, float]] = {}
         self._audit_file: str | None = audit_file
+        self._audit_max_bytes = max(0, audit_max_bytes)
+        self._audit_backup_count = max(1, audit_backup_count)
         if audit_file:
             try:
                 Path(audit_file).parent.mkdir(parents=True, exist_ok=True)
@@ -157,10 +161,41 @@ class Monitor:
 
     def _append_audit(self, entry: dict[str, Any]) -> None:
         try:
+            if self._audit_max_bytes > 0:
+                p = Path(self._audit_file)
+                if p.is_file() and p.stat().st_size >= self._audit_max_bytes:
+                    self._rotate_audit_file()
             with open(self._audit_file, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as exc:
             logger.warning("写入审计日志失败: %s", exc)
+
+    def _rotate_audit_file(self) -> None:
+        """将当前审计文件轮转为 .1/.2/...（保留 audit_backup_count 份），再新建空文件。
+
+        调用方需持有 self._lock，保证轮转与写入互斥。
+        """
+        p = Path(self._audit_file)
+        backup = self._audit_backup_count
+        # 1) 删除最旧的备份
+        try:
+            (p.with_name(f"{p.name}.{backup}")).unlink(missing_ok=True)
+        except OSError:
+            pass
+        # 2) 依次后移 .(n-1) -> .n
+        for i in range(backup - 1, 0, -1):
+            src = p.with_name(f"{p.name}.{i}")
+            dst = p.with_name(f"{p.name}.{i + 1}")
+            try:
+                if src.exists():
+                    src.replace(dst)
+            except OSError as exc:
+                logger.warning("审计轮转失败: %s", exc)
+        # 3) 当前文件 -> .1
+        try:
+            p.replace(p.with_name(f"{p.name}.1"))
+        except OSError as exc:
+            logger.warning("审计轮转失败: %s", exc)
 
     def _append_db(self, entry: dict[str, Any]) -> None:
         try:

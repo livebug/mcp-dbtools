@@ -174,6 +174,8 @@ def register_tools(
                 "jvm_heap": Monitor.jvm_memory_mb(),
             },
             "tool_summary": monitor.tool_summary(),
+            "meta_cache": manager.meta_cache_stats(),
+            "transactions": manager.all_transaction_status(),
         }
 
     @mcp.tool()
@@ -213,6 +215,81 @@ def register_tools(
         try:
             get_datasource(settings, datasource)  # 校验存在
             return manager.circuit_status(datasource)
+        except ConfigError as exc:
+            return _err(str(exc))
+
+    # ------------------------------------------------------------------
+    # 显式事务（BEGIN / COMMIT / ROLLBACK）
+    # ------------------------------------------------------------------
+    @mcp.tool()
+    @wrap_tool(monitor, "begin_transaction")
+    def begin_transaction(datasource: DatasourceArg) -> dict[str, Any] | str:
+        """在指定数据源开启事务：独占一个连接并关闭自动提交。
+
+        同一数据源同时只允许一个活动事务；超时（默认 300s）自动回滚释放。
+        后续用 execute_in_transaction 执行、commit_transaction 提交、rollback_transaction 回滚。
+        """
+        try:
+            ds = get_datasource(settings, datasource)
+            return manager.begin_transaction(ds)
+        except (ConfigError, JDBCError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    @wrap_tool(monitor, "execute_in_transaction")
+    def execute_in_transaction(
+        datasource: DatasourceArg,
+        sql: Annotated[
+            str, Field(description="事务内执行的 SQL（写操作需 confirm=true）")
+        ],
+        limit: Annotated[
+            int, Field(default=300, ge=1, le=10000, description="最多返回行数")
+        ] = 300,
+        confirm: Annotated[
+            bool, Field(description="写操作二次确认，默认 false 会拦截")
+        ] = False,
+    ) -> dict[str, Any] | str:
+        """在活动事务连接上执行 SQL（不自动提交，可继续执行或提交/回滚）。
+
+        必须先调用 begin_transaction；返回结果带 in_transaction 提示。
+        """
+        try:
+            ds = get_datasource(settings, datasource)
+            return manager.execute_in_transaction(
+                ds, sql, limit=limit, confirm=confirm
+            )
+        except (ConfigError, JDBCError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    @wrap_tool(monitor, "commit_transaction")
+    def commit_transaction(datasource: DatasourceArg) -> dict[str, Any] | str:
+        """提交并结束事务，连接归还连接池。"""
+        try:
+            ds = get_datasource(settings, datasource)
+            return manager.commit_transaction(ds)
+        except (ConfigError, JDBCError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    @wrap_tool(monitor, "rollback_transaction")
+    def rollback_transaction(datasource: DatasourceArg) -> dict[str, Any] | str:
+        """回滚并结束事务，连接归还连接池。"""
+        try:
+            ds = get_datasource(settings, datasource)
+            return manager.rollback_transaction(ds)
+        except (ConfigError, JDBCError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
+    @wrap_tool(monitor, "get_transaction_status")
+    def get_transaction_status(datasource: DatasourceArg) -> dict[str, Any] | str:
+        """查询数据源是否有活动事务及其已持续时间。"""
+        try:
+            get_datasource(settings, datasource)  # 校验存在
+            return manager.transaction_status(
+                get_datasource(settings, datasource)
+            )
         except ConfigError as exc:
             return _err(str(exc))
 

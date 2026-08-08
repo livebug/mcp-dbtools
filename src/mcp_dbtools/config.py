@@ -107,6 +107,23 @@ class Settings:
     audit_file: str | None = "logs/audit.jsonl"  # 审计日志(JSONL)路径，空则关闭
     audit_db: str | None = "logs/audit.db"  # 审计 SQLite 库（人工审计页面数据源）
     metrics_enabled: bool = True     # 是否开放 /metrics 端点
+    # 审计 JSONL 轮转：单文件超过 audit_max_bytes 时轮转为 .1/.2/...（保留 audit_backup_count 份）
+    audit_max_bytes: int = 10 * 1024 * 1024
+    audit_backup_count: int = 5
+    # ---- 导出文件清理 ----
+    export_keep_seconds: int = 86400  # 导出文件保留时长（秒，默认 1 天），超时清理
+    export_max_files: int = 100       # 最多保留的导出文件数，超出删除最旧的
+    # ---- 健康检查与自动重连 ----
+    health_check_interval: int = 30   # 后台探活/自动重连间隔（秒）
+    # ---- 限流 ----
+    rate_limit_enabled: bool = True   # 是否启用按客户端 IP 的 QPS 限流
+    rate_limit_qps: float = 10.0      # 每客户端每秒请求上限
+    rate_limit_burst: int = 20        # 突发令牌容量
+    # ---- 元数据结果缓存 ----
+    meta_cache_ttl: int = 60          # list_tables/describe_table 等元数据缓存有效期（秒）
+    meta_cache_max_items: int = 256   # 元数据缓存最大条目数
+    # ---- 显式事务 ----
+    tx_timeout: int = 300             # 事务最大持续时间（秒），超时自动回滚并释放
     # ---- 脚本执行 ----
     script_root: str = "scripts/sql"  # SQL 脚本根目录（execute_script 限定于此）
     datasources: list[DataSource] = field(default_factory=list)
@@ -151,6 +168,18 @@ def load_settings() -> Settings:
         audit_db=env.get("MCP_DBTOOLS_AUDIT_DB", "logs/audit.db") or None,
         metrics_enabled=env.get("MCP_DBTOOLS_METRICS_ENABLED", "true").lower()
         in ("1", "true", "yes", "on"),
+        audit_max_bytes=int(env.get("MCP_DBTOOLS_AUDIT_MAX_BYTES", str(10 * 1024 * 1024))),
+        audit_backup_count=int(env.get("MCP_DBTOOLS_AUDIT_BACKUP_COUNT", "5")),
+        export_keep_seconds=int(env.get("MCP_DBTOOLS_EXPORT_KEEP_SECONDS", "86400")),
+        export_max_files=int(env.get("MCP_DBTOOLS_EXPORT_MAX_FILES", "100")),
+        health_check_interval=int(env.get("MCP_DBTOOLS_HEALTH_CHECK_INTERVAL", "30")),
+        rate_limit_enabled=env.get("MCP_DBTOOLS_RATE_LIMIT_ENABLED", "true").lower()
+        in ("1", "true", "yes", "on"),
+        rate_limit_qps=float(env.get("MCP_DBTOOLS_RATE_LIMIT_QPS", "10")),
+        rate_limit_burst=int(env.get("MCP_DBTOOLS_RATE_LIMIT_BURST", "20")),
+        meta_cache_ttl=int(env.get("MCP_DBTOOLS_META_CACHE_TTL", "60")),
+        meta_cache_max_items=int(env.get("MCP_DBTOOLS_META_CACHE_MAX_ITEMS", "256")),
+        tx_timeout=int(env.get("MCP_DBTOOLS_TX_TIMEOUT", "300")),
         script_root=env.get("MCP_DBTOOLS_SCRIPT_ROOT", "scripts/sql"),
     )
 

@@ -37,16 +37,27 @@ def _join_row(row: Any, delimiter: str) -> str:
 class ExportManager:
     """异步导出任务管理（线程安全）。"""
 
-    def __init__(self, export_dir: str = "exports", max_rows: int = 100000, jdbc_manager: Any = None):
+    def __init__(
+        self,
+        export_dir: str = "exports",
+        max_rows: int = 100000,
+        jdbc_manager: Any = None,
+        keep_seconds: int = 86400,
+        max_files: int = 100,
+    ):
         self.export_dir = Path(export_dir)
         try:
             self.export_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             logger.warning("导出目录不可写: %s", exc)
         self.max_rows = max(1, max_rows)
+        self.keep_seconds = max(60, keep_seconds)
+        self.max_files = max(1, max_files)
         self._jm = jdbc_manager
         self._tasks: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
+        self._cleaner_thread: threading.Thread | None = None
+        self._stop = threading.Event()
 
     # ------------------------------------------------------------------
     def start(
@@ -159,3 +170,84 @@ class ExportManager:
         return {
             k: v for k, v in task.items() if k != "_path"
         } | {"download_url": f"/export/{task['id']}/download"}
+
+    # ------------------------------------------------------------------
+    # 过期任务清理（防止 exports/ 目录无限膨胀）
+    # ------------------------------------------------------------------
+    def start_cleaner(self, interval: float = 300.0) -> None:
+        """启动后台清理线程（daemon），周期性删除超龄/超量的导出文件与任务记录。"""
+        if self._cleaner_thread is not None and self._cleaner_thread.is_alive():
+            return
+        self._stop.clear()
+
+        def _loop() -> None:
+            while not self._stop.wait(interval):
+                try:
+                    self.cleanup()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("导出清理失败: %s", exc)
+
+        self._cleaner_thread = threading.Thread(
+            target=_loop, name="export-cleaner", daemon=True
+        )
+        self._cleaner_thread.start()
+
+    def stop_cleaner(self) -> None:
+        self._stop.set()
+        if self._cleaner_thread is not None:
+            try:
+                self._cleaner_thread.join(timeout=2.0)
+            except RuntimeError:
+                pass
+
+    def cleanup(self, keep_seconds: int | None = None, max_files: int | None = None) -> dict[str, Any]:
+        """清理过期导出文件与任务记录。
+
+        规则：
+        1. 删除 finished（succeeded/failed）且超过 keep_seconds 的任务文件与记录；
+        2. 若剩余任务数仍超过 max_files，删除最旧的已完成任务文件与记录。
+        返回清理统计。运行中（pending/running）的任务不清理。
+        """
+        keep_seconds = keep_seconds or self.keep_seconds
+        max_files = max_files or self.max_files
+        now = time.time()
+        removed: list[str] = []
+        with self._lock:
+            finished = [
+                t for t in self._tasks.values() if t["status"] in ("succeeded", "failed")
+            ]
+            # 按完成时间排序（无完成时间按创建时间兜底）
+            def _finish_ts(t: dict[str, Any]) -> float:
+                ts = t.get("finished_at") or t.get("created_at") or ""
+                try:
+                    return time.mktime(time.strptime(ts, "%Y-%m-%d %H:%M:%S"))
+                except (ValueError, TypeError):
+                    return 0.0
+
+            finished.sort(key=_finish_ts)
+            for t in finished:
+                if now - _finish_ts(t) >= keep_seconds:
+                    self._drop_task(t, removed)
+            # 超出数量上限，删最旧的
+            active = [t for t in self._tasks.values() if t["status"] in ("pending", "running")]
+            remaining_finished = [
+                t for t in self._tasks.values() if t["status"] in ("succeeded", "failed")
+            ]
+            overflow = len(active) + len(remaining_finished) - max_files
+            for t in remaining_finished[: max(0, overflow)]:
+                self._drop_task(t, removed)
+        return {"removed": removed, "removed_count": len(removed)}
+
+    def _drop_task(self, task: dict[str, Any], removed: list[str]) -> None:
+        """删除单个任务的文件与记录（调用方需持有 self._lock）。"""
+        eid = task["id"]
+        p = task.get("_path")
+        if p:
+            try:
+                fp = Path(p)
+                if fp.is_file():
+                    fp.unlink()
+            except OSError as exc:
+                logger.warning("删除导出文件失败 %s: %s", eid, exc)
+        self._tasks.pop(eid, None)
+        removed.append(eid)

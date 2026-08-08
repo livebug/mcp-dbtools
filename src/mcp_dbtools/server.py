@@ -50,13 +50,20 @@ def _build_core(settings: Any) -> tuple[FastMCP, JDBCManager, Monitor, ExportMan
         history_size=settings.history_size,
         audit_file=settings.audit_file,
         audit_db=settings.audit_db,
+        audit_max_bytes=settings.audit_max_bytes,
+        audit_backup_count=settings.audit_backup_count,
     )
     export_mgr = ExportManager(
         export_dir=settings.export_dir,
         max_rows=settings.export_max_rows,
         jdbc_manager=manager,
+        keep_seconds=settings.export_keep_seconds,
+        max_files=settings.export_max_files,
     )
     register_tools(mcp, settings, manager, monitor, export_mgr)
+    # 后台守护：数据源探活/自动重连 + 导出文件过期清理
+    manager.start_health_checker()
+    export_mgr.start_cleaner()
     return mcp, manager, monitor, export_mgr
 
 
@@ -81,17 +88,21 @@ def build_app(settings: Any):
         app = mcp.streamable_http_app()
 
     async def health(request: Request):
+        # 默认浅检查（缓存状态）；?deep=1 时对每个数据源真实执行 SELECT 1
+        deep = request.query_params.get("deep", "").lower() in ("1", "true", "yes", "on")
+        checks = [manager.health(ds, deep=deep) for ds in settings.datasources]
+        all_ok = all(c["ok"] for c in checks)
         return JSONResponse(
             {
-                "status": "ok",
+                "status": "ok" if all_ok else "degraded",
                 "service": "mcp-dbtools",
                 "transport": settings.transport,
-                "datasources": [ds.name for ds in settings.datasources],
+                "datasources": checks,
             }
         )
 
     async def metrics(request: Request):
-        """监控指标（JSON）：数据源状态、内存、工具统计。"""
+        """监控指标（JSON）：数据源状态、内存、工具统计、缓存与事务。"""
         return JSONResponse(
             {
                 "service": "mcp-dbtools",
@@ -102,10 +113,15 @@ def build_app(settings: Any):
                     "jvm_heap": Monitor.jvm_memory_mb(),
                 },
                 "tool_summary": monitor.tool_summary(),
+                "meta_cache": manager.meta_cache_stats(),
+                "transactions": manager.all_transaction_status(),
                 "config": {
                     "history_size": settings.history_size,
                     "audit_file": settings.audit_file,
                     "max_rows": settings.max_rows,
+                    "rate_limit_enabled": settings.rate_limit_enabled,
+                    "rate_limit_qps": settings.rate_limit_qps,
+                    "meta_cache_ttl": settings.meta_cache_ttl,
                 },
             }
         )
@@ -242,6 +258,17 @@ def build_app(settings: Any):
                 await self.inner(scope, receive, send)
 
         app = AuthMiddleware(app)  # type: ignore[assignment]
+
+    # ---------- 可选按客户端 IP 的 QPS 限流（最外层，保护所有接口）----------
+    if settings.rate_limit_enabled:
+        from .ratelimit import RateLimitMiddleware
+
+        app = RateLimitMiddleware(
+            app,
+            qps=settings.rate_limit_qps,
+            burst=settings.rate_limit_burst,
+            exempt_paths=("/health",),
+        )  # type: ignore[assignment]
 
     return app
 

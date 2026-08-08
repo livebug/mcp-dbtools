@@ -137,7 +137,11 @@ class JDBCManager:
         self.drivers_dir = Path(settings.drivers_dir)
         self._locks: dict[str, threading.RLock] = {}
         self._jar_cache: dict[str, list[str]] = {}
-        self._meta_cache: dict[str, Any] = {}
+        # 元数据结果缓存：key -> (expire_at, result)
+        self._meta_cache: dict[Any, tuple[float, Any]] = {}
+        self._meta_cache_lock = threading.RLock()
+        self._meta_cache_hits = 0
+        self._meta_cache_misses = 0
         # 连接池：每数据源最多 pool_size 个空闲连接
         self._pools: dict[str, deque] = {}
         self._pool_size = max(1, settings.pool_size)
@@ -145,6 +149,11 @@ class JDBCManager:
         self._circuits: dict[str, dict[str, Any]] = {}
         # 每个数据源的连接/执行统计（监控用）
         self._ds_stats: dict[str, dict[str, Any]] = {}
+        # 显式事务：name -> {conn, begun_at, auto_commit}
+        self._tx_conns: dict[str, dict[str, Any]] = {}
+        # 后台探活/自动重连
+        self._health_thread: threading.Thread | None = None
+        self._health_stop = threading.Event()
 
     # ------------------------------------------------------------------
     # 监控统计
@@ -161,6 +170,9 @@ class JDBCManager:
                 "rows_returned": 0,
                 "total_query_time_ms": 0.0,
                 "avg_query_time_ms": 0.0,
+                "last_error": None,
+                "last_health": None,
+                "health_latency_ms": None,
             }
         return self._ds_stats[name]
 
@@ -283,6 +295,87 @@ class JDBCManager:
             self._release(ds, conn)
 
     # ------------------------------------------------------------------
+    # 健康检查 / 自动重连
+    # ------------------------------------------------------------------
+    def health(self, ds: DataSource, deep: bool = True) -> dict[str, Any]:
+        """数据源健康检查：真实执行 SELECT 1 探测连接。
+
+        deep=False 时优先返回缓存状态（不触发数据库调用）；
+        但若从未探测过（last_health 为空）会做一次真实探测，保证首次结果可信。
+        成功后自动重连（连接池取出的坏连接会被丢弃并新建）。
+        """
+        st = self._stats(ds.name)
+        if not deep and st.get("last_health") is not None:
+            with self._lock_for(ds.name):
+                return {
+                    "datasource": ds.name,
+                    "ok": bool(st["connected"]),
+                    "latency_ms": st.get("health_latency_ms"),
+                    "last_health": st.get("last_health"),
+                    "error": st.get("last_error"),
+                }
+        self._check_circuit(ds.name)
+        t0 = _time.monotonic()
+        try:
+            conn = self._acquire(ds)
+            try:
+                alive = self._is_alive(conn)
+            finally:
+                self._release(ds, conn)
+        except JDBCError as exc:
+            alive, err = False, str(exc)
+        except Exception as exc:  # noqa: BLE001
+            alive, err = False, str(exc)
+        latency_ms = round((_time.monotonic() - t0) * 1000.0, 2)
+        with self._lock_for(ds.name):
+            st["last_health"] = datetime.now().isoformat(timespec="milliseconds")
+            st["health_latency_ms"] = latency_ms
+            st["connected"] = alive
+            if alive:
+                st["last_error"] = None
+                self._record_success(ds.name)
+            else:
+                st["last_error"] = err
+        return {
+            "datasource": ds.name,
+            "ok": alive,
+            "latency_ms": latency_ms,
+            "last_health": st["last_health"],
+            "error": None if alive else err,
+        }
+
+    def start_health_checker(self, interval: float | None = None) -> None:
+        """启动后台探活/自动重连线程（daemon），定期对每个数据源做 SELECT 1 探测。
+
+        探测失败会更新状态并在下次请求时通过 _acquire 自动重连。
+        """
+        if self._health_thread is not None and self._health_thread.is_alive():
+            return
+        interval = interval or max(5, self.settings.health_check_interval)
+        self._health_stop.clear()
+
+        def _loop() -> None:
+            while not self._health_stop.wait(interval):
+                for ds in list(self.settings.datasources):
+                    try:
+                        self.health(ds, deep=True)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("健康检查失败 %s: %s", ds.name, exc)
+
+        self._health_thread = threading.Thread(
+            target=_loop, name="ds-health-checker", daemon=True
+        )
+        self._health_thread.start()
+
+    def stop_health_checker(self) -> None:
+        self._health_stop.set()
+        if self._health_thread is not None:
+            try:
+                self._health_thread.join(timeout=2.0)
+            except RuntimeError:
+                pass
+
+    # ------------------------------------------------------------------
     # 熔断
     # ------------------------------------------------------------------
     def _check_circuit(self, name: str) -> None:
@@ -397,6 +490,41 @@ class JDBCManager:
     # ------------------------------------------------------------------
     # 元数据
     # ------------------------------------------------------------------
+    def _cached_meta(self, key: Any, ttl: int | None, producer):
+        """带 TTL 的元数据结果缓存（线程安全）。
+
+        key 须可哈希（如 tuple）；ttl<=0 时不做缓存直接调用 producer。
+        """
+        ttl = self.settings.meta_cache_ttl if ttl is None else ttl
+        if ttl <= 0:
+            return producer()
+        now = _time.monotonic()
+        with self._meta_cache_lock:
+            hit = self._meta_cache.get(key)
+            if hit and hit[0] > now:
+                self._meta_cache_hits += 1
+                return hit[1]
+            self._meta_cache_misses += 1
+        result = producer()
+        with self._meta_cache_lock:
+            self._meta_cache[key] = (now + ttl, result)
+            if len(self._meta_cache) > self.settings.meta_cache_max_items:
+                # 超过上限：清掉最旧的（简单策略：保留最近 max_items//2 条）
+                expired = sorted(
+                    self._meta_cache.items(), key=lambda kv: kv[1][0]
+                )
+                for k, _ in expired[: len(self._meta_cache) - self.settings.meta_cache_max_items // 2]:
+                    self._meta_cache.pop(k, None)
+        return result
+
+    def meta_cache_stats(self) -> dict[str, Any]:
+        with self._meta_cache_lock:
+            return {
+                "items": len(self._meta_cache),
+                "hits": self._meta_cache_hits,
+                "misses": self._meta_cache_misses,
+            }
+
     def test_connection(self, ds: DataSource) -> dict[str, Any]:
         """测试连接并返回数据库产品信息。"""
         self._check_circuit(ds.name)
@@ -420,6 +548,9 @@ class JDBCManager:
         }
 
     def list_schemas(self, ds: DataSource) -> list[str]:
+        return self._cached_meta(("schemas", ds.name), None, lambda: self._list_schemas_uncached(ds))
+
+    def _list_schemas_uncached(self, ds: DataSource) -> list[str]:
         if ds.type in ("tdh", "hive", "inceptor"):
             sql = _HIVE_SCHEMAS_SQL
         else:
@@ -429,6 +560,14 @@ class JDBCManager:
             return [str(r[0]) for r in cur.fetchall() if r]
 
     def list_tables(
+        self, ds: DataSource, schema: str | None = None, search: str | None = None
+    ) -> list[dict[str, str]]:
+        key = ("tables", ds.name, schema, search)
+        return self._cached_meta(
+            key, None, lambda: self._list_tables_uncached(ds, schema, search)
+        )
+
+    def _list_tables_uncached(
         self, ds: DataSource, schema: str | None = None, search: str | None = None
     ) -> list[dict[str, str]]:
         if ds.type in ("tdh", "hive", "inceptor"):
@@ -469,6 +608,14 @@ class JDBCManager:
         return tables
 
     def describe_table(
+        self, ds: DataSource, table: str, schema: str | None = None
+    ) -> list[dict[str, str]]:
+        key = ("describe", ds.name, table, schema)
+        return self._cached_meta(
+            key, None, lambda: self._describe_table_uncached(ds, table, schema)
+        )
+
+    def _describe_table_uncached(
         self, ds: DataSource, table: str, schema: str | None = None
     ) -> list[dict[str, str]]:
         if ds.type in ("tdh", "hive", "inceptor"):
@@ -519,7 +666,221 @@ class JDBCManager:
             row = cur.fetchone()
         return str(row[0]) if row else "public"
 
+    # ------------------------------------------------------------------
+    # 显式事务（BEGIN / COMMIT / ROLLBACK）
+    # ------------------------------------------------------------------
+    def begin_transaction(self, ds: DataSource) -> dict[str, Any]:
+        """开启事务：从连接池独占一个连接并关闭自动提交。
+
+        同一数据源同时只允许一个活动事务；超时（tx_timeout）会自动回滚释放。
+        """
+        self._check_circuit(ds.name)
+        with self._lock_for(ds.name):
+            if ds.name in self._tx_conns:
+                self._expire_tx_locked(ds.name)
+            if ds.name in self._tx_conns:
+                raise JDBCError(
+                    f"数据源 {ds.name} 已有活动事务，请先 commit 或 rollback"
+                )
+            conn = self._acquire(ds)
+            auto = bool(conn.jconn.getAutoCommit())
+            try:
+                conn.jconn.setAutoCommit(False)
+            except Exception as exc:  # noqa: BLE001
+                self._release(ds, conn)
+                raise JDBCError(f"开启事务失败 ({ds.name}): {exc}") from exc
+            self._tx_conns[ds.name] = {
+                "conn": conn,
+                "begun_at": _time.monotonic(),
+                "auto_commit": auto,
+            }
+        return self.transaction_status(ds)
+
+    def execute_in_transaction(
+        self, ds: DataSource, sql: str, limit: int | None = None, confirm: bool = False
+    ) -> dict[str, Any]:
+        """在活动事务连接上执行 SQL（不自动提交）。"""
+        if not sql or not sql.strip():
+            raise JDBCError("SQL 不能为空")
+        if _sql_kind(sql) == "write" and not confirm:
+            raise JDBCError(
+                "检测到写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
+                "如确认执行请传 confirm=true（将记录审计）"
+            )
+        self._check_circuit(ds.name)
+        with self._lock_for(ds.name):
+            if ds.name not in self._tx_conns:
+                raise JDBCError(f"数据源 {ds.name} 无活动事务，请先 begin_transaction")
+            if self._expire_tx_locked(ds.name):
+                raise JDBCError(
+                    f"数据源 {ds.name} 事务已超时自动回滚（>{self.settings.tx_timeout}s），请重新 begin_transaction"
+                )
+            conn = self._tx_conns[ds.name]["conn"]
+        limit = min(
+            limit if limit is not None else self.settings.max_rows,
+            self.settings.max_rows_limit,
+        )
+        t0 = _time.monotonic()
+        try:
+            cur = conn.cursor()
+            try:
+                cur.execute(sql)
+                cols = [d[0] for d in (cur.description or [])]
+                rows: list[tuple] = []
+                truncated = False
+                while True:
+                    batch = cur.fetchmany(500)
+                    if not batch:
+                        break
+                    rows.extend(batch)
+                    if len(rows) >= limit:
+                        rows = rows[:limit]
+                        truncated = True
+                        break
+                if cur.rowcount is not None and not cols:
+                    affected = int(cur.rowcount) if cur.rowcount >= 0 else 0
+                else:
+                    affected = 0
+            finally:
+                try:
+                    cur.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._record_success(ds.name)
+        except Exception as exc:  # noqa: BLE001
+            self._record_failure(ds.name)
+            with self._lock_for(ds.name):
+                st = self._stats(ds.name)
+                st["error_count"] += 1
+            raise JDBCError(f"事务内执行 SQL 失败 ({ds.name}): {exc}") from exc
+        cost_ms = (_time.monotonic() - t0) * 1000.0
+        with self._lock_for(ds.name):
+            st = self._stats(ds.name)
+            st["query_count"] += 1
+            st["rows_returned"] += len(rows)
+            st["total_query_time_ms"] += cost_ms
+        return {
+            "datasource": ds.name,
+            "in_transaction": True,
+            "columns": cols if cols else [],
+            "rows": _rows_to_jsonable(rows),
+            "row_count": len(rows),
+            "affected_rows": affected,
+            "truncated": truncated,
+            "execution_time_ms": round(cost_ms, 2),
+            "hint": "事务尚未提交，可继续执行或 commit_transaction / rollback_transaction",
+        }
+
+    def commit_transaction(self, ds: DataSource) -> dict[str, Any]:
+        """提交并结束事务，连接归还连接池。"""
+        with self._lock_for(ds.name):
+            if ds.name not in self._tx_conns:
+                raise JDBCError(f"数据源 {ds.name} 无活动事务，请先 begin_transaction")
+            if self._expire_tx_locked(ds.name):
+                raise JDBCError(
+                    f"数据源 {ds.name} 事务已超时自动回滚（>{self.settings.tx_timeout}s）"
+                )
+            rec = self._tx_conns.pop(ds.name)
+        try:
+            rec["conn"].jconn.commit()
+            self._record_success(ds.name)
+            outcome = "committed"
+        except Exception as exc:  # noqa: BLE001
+            self._record_failure(ds.name)
+            try:
+                rec["conn"].jconn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            outcome = "rollback_after_error"
+            self._finalize_tx_conn(ds.name, rec)
+            raise JDBCError(f"提交事务失败 ({ds.name}): {exc}") from exc
+        self._finalize_tx_conn(ds.name, rec)
+        return {"datasource": ds.name, "status": outcome}
+
+    def rollback_transaction(self, ds: DataSource) -> dict[str, Any]:
+        """回滚并结束事务，连接归还连接池。"""
+        with self._lock_for(ds.name):
+            if ds.name not in self._tx_conns:
+                raise JDBCError(f"数据源 {ds.name} 无活动事务，请先 begin_transaction")
+            self._expire_tx_locked(ds.name)
+            rec = self._tx_conns.pop(ds.name)
+        try:
+            rec["conn"].jconn.rollback()
+        except Exception as exc:  # noqa: BLE001
+            self._finalize_tx_conn(ds.name, rec)
+            raise JDBCError(f"回滚事务失败 ({ds.name}): {exc}") from exc
+        self._finalize_tx_conn(ds.name, rec)
+        return {"datasource": ds.name, "status": "rolled_back"}
+
+    def transaction_status(self, ds: DataSource) -> dict[str, Any]:
+        """查询数据源是否有活动事务及其已持续时间（秒）。"""
+        with self._lock_for(ds.name):
+            if ds.name not in self._tx_conns:
+                return {"datasource": ds.name, "active": False}
+            self._expire_tx_locked(ds.name)
+            if ds.name not in self._tx_conns:
+                return {
+                    "datasource": ds.name,
+                    "active": False,
+                    "note": "事务已超时自动回滚",
+                }
+            rec = self._tx_conns[ds.name]
+            return {
+                "datasource": ds.name,
+                "active": True,
+                "elapsed_seconds": round(_time.monotonic() - rec["begun_at"], 2),
+                "timeout_seconds": self.settings.tx_timeout,
+            }
+
+    def all_transaction_status(self) -> list[dict[str, Any]]:
+        """所有数据源的事务状态（监控用）。"""
+        return [self.transaction_status(ds) for ds in self.settings.datasources]
+
+    def _expire_tx_locked(self, name: str) -> bool:
+        """检测并回滚超时事务（调用方需持有 _lock_for(name)）。返回是否发生了超时回滚。"""
+        rec = self._tx_conns.get(name)
+        if not rec:
+            return False
+        if _time.monotonic() - rec["begun_at"] <= self.settings.tx_timeout:
+            return False
+        rec = self._tx_conns.pop(name)
+        try:
+            rec["conn"].jconn.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        self._finalize_tx_conn(name, rec)
+        logger.warning("数据源 %s 事务超时（%ss），已自动回滚", name, self.settings.tx_timeout)
+        return True
+
+    def _finalize_tx_conn(self, name: str, rec: dict[str, Any]) -> None:
+        """恢复自动提交并归还连接池。"""
+        try:
+            rec["conn"].jconn.setAutoCommit(rec["auto_commit"])
+        except Exception:  # noqa: BLE001
+            pass
+        with self._lock_for(name):
+            pool = self._pools.setdefault(name, deque())
+            if len(pool) < self._pool_size:
+                pool.append(rec["conn"])
+            else:
+                try:
+                    rec["conn"].close()
+                except Exception:  # noqa: BLE001
+                    pass
+
     def close_all(self) -> None:
+        # 先处理活动事务连接：回滚并关闭，避免服务关闭时泄漏
+        with self._lock:
+            for name, rec in list(self._tx_conns.items()):
+                try:
+                    rec["conn"].jconn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    rec["conn"].close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._tx_conns.clear()
         for name, pool in self._pools.items():
             for conn in pool:
                 try:

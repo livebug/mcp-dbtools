@@ -131,6 +131,11 @@ docker exec gaussdb bash -c \
 | `start_export` | **大数据量异步导出**：发起导出（自定义分隔符）→ 返回 `export_id` |
 | `get_export_status` | **导出**：轮询导出任务状态（pending/running/succeeded/failed） |
 | `list_exports` | **导出**：列出全部导出任务及下载地址 |
+| `begin_transaction` | **事务**：在数据源开启事务（独占连接，关闭自动提交） |
+| `execute_in_transaction` | **事务**：在活动事务内执行 SQL（不自动提交） |
+| `commit_transaction` | **事务**：提交并结束事务 |
+| `rollback_transaction` | **事务**：回滚并结束事务 |
+| `get_transaction_status` | **事务**：查询活动事务状态与已持续时间 |
 
 > 安全：工具只能访问 `datasources.json` 中预配置的连接，无法通过参数注入任意 JDBC URL。
 
@@ -154,6 +159,27 @@ docker exec gaussdb bash -c \
 
 ### 大数据量查询限制
 - `execute_query` **默认最多返回 300 行**（`MCP_DBTOOLS_MAX_ROWS`），`limit` 参数上限 10000（`MCP_DBTOOLS_MAX_ROWS_LIMIT`），**不支持一次性拉全量大数据**，防止 OOM 与接口超时。
+
+### 健康检查与自动重连
+- HTTP `/health` 返回每个数据源的健康状态；`/health?deep=1` 时对每个数据源**真实执行 `SELECT 1`** 探测（含延迟）。
+- 后台探活线程（`MCP_DBTOOLS_HEALTH_CHECK_INTERVAL`，默认 30s）定期探测各数据源，断连的连接在下次使用时**自动重建**（连接池丢弃坏连接并新建）。
+
+### 按客户端 IP 限流
+- 令牌桶限流（`MCP_DBTOOLS_RATE_LIMIT_QPS` 默认 10/s、突发 `BURST` 20），防止持有 token 的客户端无限调用打爆数据库；超限返回 HTTP 429。
+- `/health` 豁免限流（供负载均衡探测）。
+
+### 元数据结果缓存
+- `list_schemas` / `list_tables` / `describe_table` 结果缓存 `MCP_DBTOOLS_META_CACHE_TTL`（默认 60s），大幅降低 LLM 频繁查元数据的数据库压力；缓存命中/未命中统计见 `/metrics`。
+
+### 审计日志轮转
+- 审计 JSONL 单文件超过 `MCP_DBTOOLS_AUDIT_MAX_BYTES`（默认 10MB）自动轮转为 `.1/.2/...`，保留 `MCP_DBTOOLS_AUDIT_BACKUP_COUNT`（默认 5）份，防止磁盘膨胀。
+
+### 导出文件自动清理
+- 后台定期清理超龄（`MCP_DBTOOLS_EXPORT_KEEP_SECONDS`，默认 1 天）与超量（`MCP_DBTOOLS_EXPORT_MAX_FILES`，默认 100）的导出文件，防止 `exports/` 目录无限增长。
+
+### 显式事务
+- 多步写操作可用 `begin_transaction` → `execute_in_transaction`（多条）→ `commit_transaction` / `rollback_transaction` 原子执行，避免半途而废。
+- 同一数据源同时只允许一个活动事务；超过 `MCP_DBTOOLS_TX_TIMEOUT`（默认 300s）自动回滚并释放连接，防止连接泄漏。
 
 ## 大数据量异步导出（start_export）
 
