@@ -356,6 +356,14 @@ class Monitor:
             return None
 
 
+_ERR_PREFIX = "❌"  # tools._err 返回的业务错误前缀
+
+
+def _is_err_result(result: Any) -> bool:
+    """判断工具返回值是否为业务错误（字符串且以错误标记开头）。"""
+    return isinstance(result, str) and result.startswith(_ERR_PREFIX)
+
+
 def wrap_tool(monitor: Monitor, name: str):
     """装饰器：包装 MCP 工具函数，自动记录执行历史与审计（含客户端 IP/UA）。"""
 
@@ -372,8 +380,11 @@ def wrap_tool(monitor: Monitor, name: str):
             client = get_client_info()
             try:
                 result = fn(*args, **kwargs)
+                is_err = _is_err_result(result)
                 monitor.record_tool_call(
-                    name, call_args, time.monotonic() - t0, ok=True,
+                    name, call_args, time.monotonic() - t0,
+                    ok=not is_err,
+                    error=result if is_err else None,
                     client_ip=client.get("client_ip"),
                     user_agent=client.get("user_agent"),
                 )

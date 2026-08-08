@@ -106,6 +106,25 @@ def test_wrap_tool_records_error(tmp_path):
     assert "oops" in hist[0]["error"]
 
 
+def test_wrap_tool_records_business_error(tmp_path):
+    """工具返回 ❌ 错误字符串时应记为失败（业务错误）。"""
+    m, _ = _mk_monitor(tmp_path)
+
+    @wrap_tool(m, "maybe_fail")
+    def maybe_fail(should_fail: bool):
+        if should_fail:
+            return "❌ 查询失败: bad sql"
+        return "ok"
+
+    assert maybe_fail(False) == "ok"
+    assert m.execution_history(1)[0]["ok"] is True
+
+    maybe_fail(True)
+    hist = m.execution_history(1)
+    assert hist[0]["ok"] is False
+    assert "bad sql" in hist[0]["error"]
+
+
 # ---------- SQLite 审计查询 ----------
 def test_audit_db_write_and_query(tmp_path):
     m, _ = _mk_monitor(tmp_path)
