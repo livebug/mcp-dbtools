@@ -78,6 +78,22 @@ def test_args_sanitized(tmp_path):
     assert "..." in hist[0]["args"]["sql"]
 
 
+def test_args_nested_dict_preserved(tmp_path):
+    """嵌套 dict 参数（如 params）应保持 JSON 对象结构，而非被 str() 转成字符串。"""
+    m, _ = _mk_monitor(tmp_path)
+    m.record_tool_call(
+        "execute_script",
+        {"script_path": "a.sql", "params": {"V_DATE": "2026-08-08", "n": 3, "tags": ["a", "b"]}},
+        ok=True,
+    )
+    args = m.execution_history(1)[0]["args"]
+    assert isinstance(args["params"], dict)
+    assert args["params"] == {"V_DATE": "2026-08-08", "n": 3, "tags": ["a", "b"]}
+    # SQLite 持久化后仍应为 JSON 对象
+    row = m.query_audit(page_size=1)["items"][0]
+    assert row["args"]["params"] == {"V_DATE": "2026-08-08", "n": 3, "tags": ["a", "b"]}
+
+
 def test_wrap_tool_records(tmp_path):
     m, _ = _mk_monitor(tmp_path)
 

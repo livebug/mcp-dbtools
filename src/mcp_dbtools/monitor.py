@@ -64,19 +64,24 @@ def get_client_info() -> dict[str, str]:
     return _client_ctx.get()
 
 
+def _sanitize_value(v: Any) -> Any:
+    """递归裁剪/序列化单个参数值（保留 dict/list 结构，长字符串截断）。"""
+    if isinstance(v, str):
+        return v if len(v) <= _MAX_ARG_LEN else v[:_MAX_ARG_LEN] + f"...({len(v)}字符)"
+    if isinstance(v, (int, float, bool)) or v is None:
+        return v
+    if isinstance(v, dict):
+        return {str(k): _sanitize_value(val) for k, val in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_sanitize_value(x) for x in v]
+    return str(v)  # 其它类型兜底转字符串
+
+
 def _sanitize_args(args: dict[str, Any] | None) -> dict[str, Any]:
-    """裁剪过长的参数（如 SQL），避免审计日志无限膨胀。"""
+    """裁剪过长的参数（如 SQL），避免审计日志无限膨胀；嵌套结构保持为 JSON 对象。"""
     if not args:
         return {}
-    out: dict[str, Any] = {}
-    for k, v in args.items():
-        if isinstance(v, str):
-            out[k] = v if len(v) <= _MAX_ARG_LEN else v[:_MAX_ARG_LEN] + f"...({len(v)}字符)"
-        elif isinstance(v, (int, float, bool)) or v is None:
-            out[k] = v
-        else:
-            out[k] = str(v)  # 其它类型兜底转字符串
-    return out
+    return {str(k): _sanitize_value(v) for k, v in args.items()}
 
 
 class Monitor:
