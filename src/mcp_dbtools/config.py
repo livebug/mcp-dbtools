@@ -148,6 +148,10 @@ class Settings:
     tx_timeout: int = 300             # 事务最大持续时间（秒），超时自动回滚并释放
     # ---- 脚本执行 ----
     script_root: str = "scripts/sql"  # SQL 脚本根目录（execute_script 限定于此）
+    # ---- 服务日志（落盘 + 轮转）----
+    log_file: str | None = "logs/app.log"  # 应用日志文件路径，空则仅输出控制台
+    log_max_bytes: int = 10 * 1024 * 1024  # 单日志文件最大字节数（超过轮转 .1/.2/...）
+    log_backup_count: int = 5              # 日志轮转保留备份份数
     datasources: list[DataSource] = field(default_factory=list)
 
 
@@ -203,6 +207,10 @@ def load_settings() -> Settings:
         meta_cache_max_items=int(env.get("MCP_DBTOOLS_META_CACHE_MAX_ITEMS", "256")),
         tx_timeout=int(env.get("MCP_DBTOOLS_TX_TIMEOUT", "300")),
         script_root=env.get("MCP_DBTOOLS_SCRIPT_ROOT", "scripts/sql"),
+        # 服务日志落盘（默认 logs/app.log，设为空字符串仅输出控制台）
+        log_file=env.get("MCP_DBTOOLS_LOG_FILE", "logs/app.log") or None,
+        log_max_bytes=int(env.get("MCP_DBTOOLS_LOG_MAX_BYTES", str(10 * 1024 * 1024))),
+        log_backup_count=int(env.get("MCP_DBTOOLS_LOG_BACKUP_COUNT", "5")),
     )
 
     raw = _load_json(cfg.config_path)

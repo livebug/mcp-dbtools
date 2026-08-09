@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import logging.handlers
 import sys
+from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -22,6 +24,7 @@ from .audit_page import AUDIT_HTML
 from .config import ConfigError, load_settings
 from .export import ExportManager
 from .jdbc import JDBCManager
+from .logs_page import LOGS_HTML, tail_lines
 from .monitor import Monitor, set_client_info
 from .tools import register_tools
 
@@ -172,6 +175,27 @@ def build_app(settings: Any):
     app.router.routes.insert(0, Route("/audit/api", audit_api))
     app.router.routes.insert(0, Route("/audit", audit_page))
 
+    # ---------- 服务日志查看页面 / API ----------
+    async def logs_page(request: Request):
+        return HTMLResponse(LOGS_HTML)
+
+    async def logs_api(request: Request):
+        """服务日志查询 API：action=tail（尾部 N 行，可按关键字过滤）。"""
+        p = request.query_params
+        action = p.get("action", "tail")
+        if action != "tail":
+            return JSONResponse({"error": f"未知 action: {action}"}, status_code=400)
+        lines = _to_int(p.get("lines", "200"), 200)
+        q = p.get("q") or None
+        if settings.log_file:
+            data = tail_lines(settings.log_file, lines=lines, q=q)
+        else:
+            data = {"content": "(未配置日志文件，仅输出到控制台)", "file": None}
+        return JSONResponse(data)
+
+    app.router.routes.insert(0, Route("/logs/api", logs_api))
+    app.router.routes.insert(0, Route("/logs", logs_page))
+
     # ---------- 导出文件下载 ----------
     from starlette.responses import FileResponse
 
@@ -226,9 +250,11 @@ def build_app(settings: Any):
                     return
                 if scope["type"] == "http":
                     path = scope.get("path", "")
-                    # 免鉴权：健康检查 与 审计页面（HTML 壳，数据在 /audit/api 保护）
+                    # 免鉴权：健康检查 与 审计/日志 页面（HTML 壳，数据接口受保护）
                     if path.startswith("/health") or (
                         path.startswith("/audit") and not path.startswith("/audit/api")
+                    ) or (
+                        path.startswith("/logs") and not path.startswith("/logs/api")
                     ):
                         await self.inner(scope, receive, send)
                         return
@@ -296,11 +322,29 @@ def run_stdio(settings: Any) -> None:
     mcp.run(transport="stdio")
 
 
-def main(argv: list[str] | None = None) -> int:
+def _setup_logging(settings: Any) -> None:
+    """配置日志：输出到控制台，并可选落盘（按大小轮转，便于服务器上查看）。"""
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if settings.log_file:
+        try:
+            Path(settings.log_file).parent.mkdir(parents=True, exist_ok=True)
+            fh = logging.handlers.RotatingFileHandler(
+                settings.log_file,
+                maxBytes=max(1024, settings.log_max_bytes),
+                backupCount=max(1, settings.log_backup_count),
+                encoding="utf-8",
+            )
+            handlers.append(fh)
+        except OSError as exc:
+            logger.warning("日志文件不可写，仅输出控制台: %s", exc)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
     )
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="mcp-dbtools MCP 服务")
     parser.add_argument(
         "--transport",
@@ -317,6 +361,8 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         logger.error("配置错误: %s", exc)
         return 1
+
+    _setup_logging(settings)
 
     transport = args.transport or settings.transport
     if args.host:
