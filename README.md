@@ -112,7 +112,7 @@ docker exec gaussdb bash -c \
 ```
 
 - `type`: `gaussdb` / `opengauss` / `postgresql` 走 information_schema 方言；`tdh` / `hive` / `inceptor` 走 `SHOW DATABASES` 等 Hive 方言。
-- `password` 支持 `{ENV:VAR}` 从环境变量注入，避免明文入库。
+- `password` 支持 `{ENC:...}` **加密存储**（AES-256-GCM，用 `MCP_DBTOOLS_SECRET_KEY` 解密，推荐），也兼容 `{ENV:VAR}` 从环境变量注入。生成加密串：`echo -n "明文" | python scripts/encrypt_password.py --stdin`。
 - 可用环境变量见 `.env.example`（`MCP_DBTOOLS_HOST/PORT/TRANSPORT/AUTH_TOKEN/CONFIG/DRIVERS_DIR/MAX_ROWS` 等）。
 
 ## MCP 工具

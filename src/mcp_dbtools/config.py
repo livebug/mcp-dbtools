@@ -2,7 +2,9 @@
 
 支持：
 - 通过环境变量 MCP_DBTOOLS_CONFIG 指定配置文件路径；
-- 配置值中的 {ENV:VAR} 会被替换为对应环境变量的值（常用于密码，避免明文入库）；
+- 配置值中的 {ENV:VAR} 会被替换为对应环境变量的值（常用于密码）；
+- 配置值中的 {ENC:...} 为 AES-256-GCM 加密串，用 MCP_DBTOOLS_SECRET_KEY 解密
+  （密码不落明文，见 scripts/encrypt_password.py 生成）；
 - 自动加载项目根目录 .env 文件。
 """
 
@@ -17,7 +19,11 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from .crypto import CryptoError, decrypt_password
+
 _ENV_PATTERN = re.compile(r"\{ENV:([A-Za-z_][A-Za-z0-9_]*)\}")
+_ENC_PATTERN = re.compile(r"\{ENC:([A-Za-z0-9+/=]+)\}")
+_SECRET_KEY_ENV = "MCP_DBTOOLS_SECRET_KEY"
 
 
 class ConfigError(Exception):
@@ -46,7 +52,23 @@ class DataSource:
 
         def _sub(value: Any) -> Any:
             if isinstance(value, str):
-                return _ENV_PATTERN.sub(lambda m: env.get(m.group(1), ""), value)
+                s = _ENV_PATTERN.sub(lambda m: env.get(m.group(1), ""), value)
+                secret_key = env.get(_SECRET_KEY_ENV, "")
+
+                def _decrypt(m: re.Match[str]) -> str:
+                    if not secret_key:
+                        raise ConfigError(
+                            f"配置使用了 {m.group(0)} 加密密码，但未设置环境变量 "
+                            f"{_SECRET_KEY_ENV}"
+                        )
+                    try:
+                        return decrypt_password(m.group(1), secret_key)
+                    except CryptoError as exc:
+                        raise ConfigError(
+                            f"解密密码失败（{_SECRET_KEY_ENV} 错误或密文被篡改）: {exc}"
+                        ) from exc
+
+                return _ENC_PATTERN.sub(_decrypt, s)
             return value
 
         name = str(raw.get("name", "")).strip()

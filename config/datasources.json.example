@@ -7,7 +7,7 @@
       "driver_class": "org.opengauss.Driver",
       "jdbc_url": "jdbc:opengauss://127.0.0.1:15432/testdb",
       "username": "gaussdb",
-      "password": "{ENV:GAUSS_PASSWORD}",
+      "password": "{ENC:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}",
       "jars": ["opengauss-jdbc-5.0.0-og.jar"]
     },
     {
@@ -17,7 +17,7 @@
       "driver_class": "com.transwarp.jdbc.jdbc.TWJdbcDriver",
       "jdbc_url": "jdbc:transwarp://127.0.0.1:10000/testdb",
       "username": "tdh",
-      "password": "{ENV:TDH_PASSWORD}",
+      "password": "{ENC:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}",
       "jars": ["inceptor-driver.jar"]
     }
   ]
