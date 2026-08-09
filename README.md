@@ -14,6 +14,18 @@
 - **可观测性**：审计（JSONL 轮转 + SQLite）· 人工审计页面 `/audit` · 监控 `/metrics` · 服务日志 `/logs` · 健康检查 `/health`
 - **运维**：内网 pm2 离线部署 · systemd 单元 · 异步大数据导出 · 显式事务
 
+## AI 协作（Agent 定制化）
+
+本仓库为 AI 助手（Copilot / Claude 等）提供定制化文件：
+
+- **`AGENTS.md`** — 项目规则（架构 / 代码约定 / 安全红线 / 提交要求），AI 始终遵循
+- **Skills**（`.github/skills/`，输入 `/` 可查看）：
+  - `offline-deploy`：内网离线部署打包
+  - `release`：版本发布流程（版本号 / CHANGELOG / 离线包 / tag）
+  - `add-datasource`：新增数据源（配置 / 驱动 / 密码加密 / 验证）
+  - `security-review`：安全配置审查
+- **Custom Agent**：`.github/agents/db-ops.agent.md` — 数据库 MCP 开发 / 排错专用代理（代理选择器可选）
+
 支持数据源：
 
 | 数据源 | 驱动 | JDBC URL 示例 |
