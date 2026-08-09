@@ -2,6 +2,8 @@
 
 基于 **Python + JDBC** 的数据库 MCP（Model Context Protocol）服务，用于通过 LLM 客户端查询数据库。
 
+> 📖 **完整使用操作说明（部署/配置/工具/排错）：见 [docs/使用说明.md](docs/使用说明.md)**
+
 支持数据源：
 
 | 数据源 | 驱动 | JDBC URL 示例 |
