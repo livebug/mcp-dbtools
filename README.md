@@ -1,8 +1,18 @@
 # mcp-dbtools
 
+> **v1.0.0** · 生产可用稳定版 · [更新日志](CHANGELOG.md)
+
 基于 **Python + JDBC** 的数据库 MCP（Model Context Protocol）服务，用于通过 LLM 客户端查询数据库。
 
 > 📖 **完整使用操作说明（部署/配置/工具/排错）：见 [docs/使用说明.md](docs/使用说明.md)**
+
+## 功能特性
+
+- **多数据源**：GaussDB / openGauss / TDH Inceptor / Hive / PostgreSQL 兼容库（按方言自动适配）
+- **安全**：Bearer 鉴权 · 写操作二次确认 · 密码加密存储（`{ENC:...}` AES-256-GCM）· 熔断 · 按 IP 限流 · 行数上限
+- **并发与性能**：JDBC 连接池 · 工具异步化 · 元数据 TTL 缓存
+- **可观测性**：审计（JSONL 轮转 + SQLite）· 人工审计页面 `/audit` · 监控 `/metrics` · 服务日志 `/logs` · 健康检查 `/health`
+- **运维**：内网 pm2 离线部署 · systemd 单元 · 异步大数据导出 · 显式事务
 
 支持数据源：
 
@@ -27,26 +37,44 @@ flowchart LR
     S --> H[/health 健康检查/]
 ```
 
+### HTTP 端点
+
+| 端点 | 鉴权 | 说明 |
+| --- | --- | --- |
+| `POST /mcp` | ✅ 需要 | **MCP 端点**，LLM 客户端调用工具 |
+| `GET /health` | ❌ 免鉴权 | 健康检查；`?deep=1` 真实 `SELECT 1` 探测各数据源 |
+| `GET /metrics` | ✅ 需要 | 监控 JSON（数据源状态 / 内存 / 工具统计 / 缓存 / 事务） |
+| `GET /audit` | ❌ 页面 | 人工审计页面（数据接口 `/audit/api` 需鉴权） |
+| `GET /logs` | ❌ 页面 | 服务日志查看页面（数据接口 `/logs/api` 需鉴权） |
+| `GET /export/{id}/download` | ✅ 需要 | 导出文件下载 |
+
 ## 目录结构
 
 ```
 mcp-dbtools/
 ├── src/mcp_dbtools/
-│   ├── server.py        # MCP 服务入口（HTTP/SSE/stdio + 鉴权 + 健康检查）
-│   ├── jdbc.py          # JDBC 连接管理、查询、元数据（按方言）
-│   ├── tools.py         # MCP 工具定义
-│   └── config.py        # 配置加载（datasources.json + 环境变量）
-├── config/
-│   ├── datasources.json          # 数据源配置（宿主机直连）
-│   └── datasources.docker.json   # 数据源配置（Docker Compose 内部网络）
+│   ├── server.py        # 服务入口（HTTP/SSE/stdio + 鉴权/限流/健康检查/审计/日志路由）
+│   ├── jdbc.py          # JDBC 连接池、查询、元数据缓存、熔断、事务、健康检查
+│   ├── tools.py         # MCP 工具定义（20 个）
+│   ├── config.py        # 配置加载（datasources.json + 环境变量 + 密码解密）
+│   ├── monitor.py       # 审计（JSONL 轮转 + SQLite）、执行历史、指标
+│   ├── export.py        # 异步导出 + 过期文件清理
+│   ├── audit_page.py    # 人工审计 HTML 页面
+│   ├── logs_page.py     # 服务日志查看页面
+│   ├── crypto.py        # 密码加密存储（{ENC:...}）
+│   └── ratelimit.py     # 令牌桶限流中间件
+├── config/              # 数据源配置
 ├── drivers/             # JDBC 驱动 jar（脚本下载 / 手工放置）
 ├── scripts/
-│   ├── download_drivers.py   # 下载 openGauss 驱动
-│   ├── mcp_client_demo.py    # HTTP 客户端演示
-│   └── java/TdhTest.java     # TDH 连接自测工具
+│   ├── download_drivers.py    # 下载 openGauss 驱动
+│   ├── encrypt_password.py    # 密码加密工具（生成 {ENC:...}）
+│   ├── mcp_client_demo.py     # HTTP 客户端演示
+│   ├── sql/                   # SQL 脚本根目录（execute_script 使用）
+│   └── java/                  # TDH 连接自测工具
 ├── docker/              # Docker 部署与测试库
-├── deploy/              # systemd 单元
-└── tests/
+├── deploy/              # pm2 / systemd 部署
+├── docs/                # 使用操作说明
+└── tests/               # 单元与集成测试
 ```
 
 ## 环境要求
@@ -90,6 +118,34 @@ python scripts/mcp_client_demo.py --url http://127.0.0.1:8000/mcp
 ```bash
 docker exec gaussdb bash -c \
   "echo 'host all all 0.0.0.0/0 sha256' >> /var/lib/opengauss/data/pg_hba.conf && kill -HUP 1"
+```
+
+## 部署到生产
+
+### 内网离线部署（pm2，推荐）
+适用于**无法访问外网**的内网服务器（无 Docker 或不允许 Docker）：
+
+```bash
+# 外网构建机：生成离线包（项目 wheel + 依赖 + JDBC 驱动 + 配置）
+bash scripts/build_offline.sh            # 产物 mcp-dbtools-offline-*.tar.gz
+
+# 内网机：拷贝解压并安装（建 venv、离线装依赖、pm2 启动）
+tar xzf mcp-dbtools-offline-*.tar.gz -C /opt/mcp-dbtools
+cd /opt/mcp-dbtools && bash deploy/install_offline.sh
+
+# 运维常用
+pm2 logs mcp-dbtools          # 日志
+pm2 reload mcp-dbtools        # 重启
+```
+
+前置：内网机需 JRE/JDK 8+ 与 Node.js/pm2；构建机与内网机需同为 Linux x86_64 且 Python 主版本一致。
+详细说明见 [docs/使用说明.md](docs/使用说明.md) 第 2 章。
+
+### systemd 部署
+```bash
+sudo cp deploy/mcp-dbtools.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mcp-dbtools
 ```
 
 ## 配置说明（config/datasources.json）
@@ -244,7 +300,7 @@ execute_script(
 
 ```bash
 curl http://<服务器IP>:8000/metrics
-# 返回: 数据源状态 / 内存 / 工具调用统计 / 运行时长
+# 返回: 数据源状态 / JVM 与进程内存 / 工具调用统计 / 元数据缓存命中 / 事务状态 / 运行时长
 ```
 
 ### 审计记录内容
@@ -256,6 +312,18 @@ curl http://<服务器IP>:8000/metrics
 ```bash
 # 浏览器打开
 http://<服务器IP>:8000/audit
+```
+
+支持按工具 / IP / 成败 / 关键字 / 时间检索、查看单条详情、统计概览、导出 CSV。
+
+### 服务日志查看（/logs）
+服务运行日志默认落盘 `logs/app.log`（按大小轮转，保留 5 份），可网页实时查看：
+
+```bash
+# 浏览器打开（支持行数选择、关键字过滤、自动刷新）
+http://<服务器IP>:8000/logs
+# 或命令行
+tail -f logs/app.log
 ```
 
 页面功能：
