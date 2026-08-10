@@ -27,7 +27,13 @@ echo "==> [1/4] 构建项目 wheel"
 "$PY" -m pip wheel . --no-deps -w dist/
 
 echo "==> [2/4] 下载运行时依赖 wheel（仅二进制，保证内网可用）"
-"$PY" -m pip download -r requirements.txt -d wheels/ --only-binary=:all:
+# 锁定 manylinux2014（glibc 2.17+）平台标签，避免拉到 manylinux_2_28/2_34 等
+# 过新 wheel（如新版 cryptography），导致 CentOS 7/8 等内网机无法安装；
+# pip 会自动选择兼容该平台的最新版本。
+PY_VER="$("$PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+ARCH="$(uname -m)"
+"$PY" -m pip download -r requirements.txt -d wheels/ --only-binary=:all: \
+    --platform "manylinux2014_${ARCH}" --python-version "$PY_VER"
 
 echo "==> [3/4] 组装离线包目录"
 mkdir -p "$PKG/dist" "$PKG/wheels"

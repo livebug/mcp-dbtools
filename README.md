@@ -92,7 +92,7 @@ mcp-dbtools/
 ## 环境要求
 
 - Python 3.10+（已测 3.13）
-- JRE/JDK 8+（JPype 需要，已测 OpenJDK 21）
+- JRE/JDK 11+（JPype 需要；JPype 1.5+ 不支持 Java 8，已测 OpenJDK 21）
 - （部署）Docker 或 systemd Linux 服务器
 
 ## 快速开始
@@ -150,7 +150,7 @@ pm2 logs mcp-dbtools          # 日志
 pm2 reload mcp-dbtools        # 重启
 ```
 
-前置：内网机需 JRE/JDK 8+ 与 Node.js/pm2；构建机与内网机需同为 Linux x86_64 且 Python 主版本一致。
+前置：内网机需 JRE/JDK 11+（JPype 1.5+ 不支持 Java 8）与 Node.js/pm2；构建机与内网机需同为 Linux x86_64 且 Python 主版本一致。
 详细说明见 [docs/使用说明.md](docs/使用说明.md) 第 2 章。
 
 ### systemd 部署
@@ -416,10 +416,11 @@ bash scripts/build_offline.sh
 ```
 
 > 构建机与内网机需**同为 Linux x86_64 + 相同 Python 主版本**（依赖含 manylinux 二进制 wheel，如 `jpype1`/`pydantic-core`）。
+> 离线包 wheel 已锁定 manylinux2014（glibc 2.17+）平台标签，兼容 CentOS 7/8 等内网机。
 
 #### ② 拷贝到内网服务器并安装
 
-内网机需先具备：**JRE 8+**（JPype 需要 JVM）、**Node.js + pm2**。
+内网机需先具备：**JRE/JDK 11+**（JPype 需要 JVM，JPype 1.5+ 不支持 Java 8）、**Node.js + pm2**。
 
 ```bash
 # 上传离线包后

@@ -3,6 +3,19 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.0.3] - 2026-08-10
+
+### 修复
+
+- **离线包 wheel 平台兼容**：`build_offline.sh` 下载依赖时锁定 manylinux2014
+  （glibc 2.17+）平台标签，避免拉到 manylinux_2_28/2_34 过新 wheel（如新版
+  cryptography），导致 CentOS 7/8 等内网机无法安装、`{ENC:...}` 密码解密报
+  `_HAS_CRYPTO=False`。
+- **多数据源 JDBC 驱动加载**：JVM 启动前合并全部数据源的驱动 jar 到 classpath
+  （`_ensure_jvm`），修复只对首个连接的数据源生效、其余数据源报驱动找不到的问题。
+- **Java 版本要求更正**：JPype 1.5+ 不支持 Java 8，文档与离线安装脚本统一改为
+  JRE/JDK 11+（推荐 17/21），安装脚本增加 Java 版本预检。
+
 ## [1.0.2] - 2026-08-10
 
 ### 修复

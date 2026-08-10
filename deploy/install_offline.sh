@@ -7,7 +7,7 @@
 #   bash mcp-dbtools-offline/install.sh [安装目录，默认 /opt/mcp-dbtools]
 #
 # 依赖:
-#   - JRE 8+（jaydebeapi/JPype 需要 JVM）
+#   - JRE/JDK 11+（jaydebeapi/JPype 需要 JVM；JPype 1.5+ 不支持 Java 8）
 #   - pm2（Node.js）
 # =============================================================
 set -euo pipefail
@@ -19,9 +19,21 @@ echo "==> 安装目录: $INSTALL_DIR"
 
 # ---------- 前置检查 ----------
 if ! command -v java >/dev/null 2>&1; then
-  echo "[ERROR] 未检测到 Java 运行时（JRE 8+），JPype/jaydebeapi 需要 JVM。请先安装:"
-  echo "  CentOS/RHEL : sudo yum install -y java-1.8.0-openjdk-headless"
-  echo "  Ubuntu/Debian: sudo apt install -y default-jre-headless"
+  echo "[ERROR] 未检测到 Java 运行时（JRE/JDK 11+），JPype/jaydebeapi 需要 JVM。请先安装:"
+  echo "  CentOS/RHEL : sudo yum install -y java-17-openjdk-headless"
+  echo "  Ubuntu/Debian: sudo apt install -y openjdk-17-jre-headless"
+  exit 1
+fi
+# JPype 1.5+ 要求 Java 11+（Java 8 会报 JavaVersion 错误），安装前做版本校验
+JAVA_MAJOR="$(java -version 2>&1 | head -1 | sed -E 's/.*version "([0-9]+).*/\1/')"
+if [ "$JAVA_MAJOR" = "1" ]; then
+  echo "[ERROR] 检测到 Java 8 及以下版本，JPype 1.5+ 需要 JDK 11+。请升级:"
+  echo "  CentOS/RHEL : sudo yum install -y java-17-openjdk-headless"
+  echo "  Ubuntu/Debian: sudo apt install -y openjdk-17-jre-headless"
+  exit 1
+fi
+if [ -n "$JAVA_MAJOR" ] && [ "$JAVA_MAJOR" -lt 11 ] 2>/dev/null; then
+  echo "[ERROR] 检测到 Java $JAVA_MAJOR，JPype 1.5+ 需要 JDK 11+（推荐 17/21）。请升级后重试"
   exit 1
 fi
 if ! command -v pm2 >/dev/null 2>&1; then

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import jaydebeapi
+import jpype
 
 from .config import DataSource, Settings
 
@@ -135,6 +136,7 @@ class JDBCManager:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.drivers_dir = Path(settings.drivers_dir)
+        self._jvm_lock = threading.Lock()
         self._locks: dict[str, threading.RLock] = {}
         self._jar_cache: dict[str, list[str]] = {}
         # 元数据结果缓存：key -> (expire_at, result)
@@ -221,10 +223,48 @@ class JDBCManager:
             self._locks[name] = threading.RLock()
         return self._locks[name]
 
+    def _all_jar_paths(self) -> list[str]:
+        """收集全部数据源的驱动 jar 并去重（缺失的仅告警跳过，连接时仍会严格报错）。"""
+        seen: set[str] = set()
+        all_paths: list[str] = []
+        for ds in self.settings.datasources:
+            try:
+                for p in self._jar_paths(ds):
+                    if p not in seen:
+                        seen.add(p)
+                        all_paths.append(p)
+            except JDBCError as exc:
+                logger.warning("跳过缺失驱动（不影响其他数据源）: %s", exc)
+        return all_paths
+
+    def _ensure_jvm(self) -> None:
+        """确保 JVM 已启动，且 classpath 一次性包含全部数据源的驱动 jar。
+
+        JPype 一个进程只允许一个 JVM，且 JVM 启动后无法再追加 classpath；
+        若只按首个连接的数据源启动，后续不同驱动 jar 的数据源会报驱动找不到。
+        """
+        if jpype.isJVMStarted():
+            return
+        with self._jvm_lock:
+            if jpype.isJVMStarted():
+                return
+            jars = self._all_jar_paths()
+            logger.info("启动 JVM（classpath 合并 %d 个驱动 jar）", len(jars))
+            try:
+                if jars:
+                    jpype.startJVM(classpath=jars)
+                else:
+                    jpype.startJVM()
+            except Exception as exc:  # noqa: BLE001
+                raise JDBCError(
+                    f"启动 JVM 失败: {exc}（JPype 1.5+ 需要 JDK 11+，请安装 JRE/JDK 11 及以上版本）"
+                ) from exc
+
     def _new_connection(self, ds: DataSource) -> jaydebeapi.Connection:
         jars = self._jar_paths(ds)
         if not ds.driver_class:
             raise JDBCError(f"数据源 {ds.name} 未配置 driver_class")
+        self._ensure_jvm()
         logger.info("连接数据源 %s (%s)", ds.name, ds.type)
         try:
             conn = jaydebeapi.connect(
