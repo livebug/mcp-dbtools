@@ -3,6 +3,13 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.0.2] - 2026-08-10
+
+### 修复
+
+- 离线部署包遗漏 `docs/使用说明.md`，已补入打包流程。
+- 修正使用手册 4 处错误：版本号、工具数量、离线部署路径、pm2 启动路径。
+
 ## [1.0.1] - 2026-08-10
 
 ### 文档
