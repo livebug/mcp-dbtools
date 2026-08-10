@@ -42,6 +42,7 @@ cp scripts/encrypt_password.py "$PKG/scripts/encrypt_password.py"
 cp deploy/ecosystem.config.cjs "$PKG/"
 cp deploy/install_offline.sh "$PKG/install.sh"
 cp .env.example "$PKG/.env.example"
+cp -r docs "$PKG/docs"
 chmod +x "$PKG/install.sh"
 
 echo "==> [4/4] 打包"
