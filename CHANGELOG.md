@@ -3,6 +3,14 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.0.1] - 2026-08-10
+
+### 文档
+
+- 新增 AI 协作定制化：`AGENTS.md` 项目规则、4 个 Skills（offline-deploy / release /
+  add-datasource / security-review）、`db-ops` 专用代理。
+- README 增加「AI 协作」章节。
+
 ## [1.0.0] - 2026-08-09
 
 首个正式稳定版发布。自 0.1.0 以来累计完成了连接池/并发、安全加固、可观测性、
