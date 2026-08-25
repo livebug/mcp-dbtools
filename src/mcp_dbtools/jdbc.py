@@ -49,6 +49,21 @@ _HIVE_SCHEMAS_SQL = "SHOW DATABASES"
 _HIVE_TABLES_SQL = "SHOW TABLES"  # 当前库；也支持 SHOW TABLES IN {schema}
 _HIVE_DESCRIBE_SQL = "DESCRIBE {table}"  # 也支持 DESCRIBE {schema}.{table}
 
+# DB2 方言（SYSCAT 目录，排除系统 schema）
+_DB2_SYSTEM_SCHEMAS = "('SYSIBM','SYSCAT','SYSSTAT','SYSIBMADM','SYSTOOLS','SYSPUBLIC','SYSFUN','SYSPROC','SYSIBMTS')"
+_DB2_SCHEMAS_SQL = (
+    f"SELECT schemaname FROM syscat.schemata "
+    f"WHERE schemaname NOT IN {_DB2_SYSTEM_SCHEMAS} ORDER BY 1"
+)
+_DB2_TABLES_SQL = (
+    f"SELECT tabschema, tabname, type FROM syscat.tables "
+    f"WHERE tabschema NOT IN {_DB2_SYSTEM_SCHEMAS} ORDER BY tabname"
+)
+_DB2_COLUMNS_SQL = (
+    "SELECT colname, typename, length, scale, nulls, remarks "
+    "FROM syscat.columns WHERE tabschema = ? AND tabname = ? ORDER BY colno"
+)
+
 
 class JDBCError(Exception):
     """JDBC 操作异常。"""
@@ -593,6 +608,8 @@ class JDBCManager:
     def _list_schemas_uncached(self, ds: DataSource) -> list[str]:
         if ds.type in ("tdh", "hive", "inceptor"):
             sql = _HIVE_SCHEMAS_SQL
+        elif ds.type == "db2":
+            sql = _DB2_SCHEMAS_SQL
         else:
             sql = _PG_SCHEMAS_SQL
         with self.cursor(ds) as cur:
@@ -623,6 +640,27 @@ class JDBCManager:
                 if search and search.lower() not in table.lower():
                     continue
                 tables.append({"schema": schema or "", "table": table})
+            return tables
+
+        # DB2 方言（SYSCAT）
+        if ds.type == "db2":
+            sql = _DB2_TABLES_SQL
+            params: list[Any] = []
+            if schema:
+                sql = (
+                    "SELECT tabschema, tabname, type FROM syscat.tables "
+                    "WHERE tabschema = ? ORDER BY tabname"
+                )
+                params.append(schema)
+            with self.cursor(ds) as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            tables = []
+            for r in rows:
+                s, t, tt = (str(r[0]), str(r[1]), str(r[2] if len(r) > 2 else ""))
+                if search and search.lower() not in t.lower():
+                    continue
+                tables.append({"schema": s, "table": t, "type": tt})
             return tables
 
         # 通用 / openGauss 方言
@@ -677,6 +715,31 @@ class JDBCManager:
                 )
             return cols
 
+        # DB2 方言（SYSCAT.COLUMNS）
+        if ds.type == "db2":
+            if not schema:
+                schema = self._guess_schema(ds, table)
+            with self.cursor(ds) as cur:
+                cur.execute(_DB2_COLUMNS_SQL, [schema, table])
+                rows = cur.fetchall()
+            cols = []
+            for r in rows:
+                dtype = str(r[1])
+                if len(r) > 2 and r[2]:
+                    dtype += f"({r[2]})"
+                    if len(r) > 3 and r[3] and int(r[3] or 0) > 0:
+                        dtype += f",{r[3]}"
+                cols.append(
+                    {
+                        "column": str(r[0]),
+                        "data_type": dtype,
+                        "nullable": "Y" if len(r) > 4 and str(r[4]).upper() == "Y" else "N",
+                        "default": "",
+                        "comment": str(r[5]) if len(r) > 5 and r[5] else "",
+                    }
+                )
+            return cols
+
         if not schema:
             schema = self._guess_schema(ds, table)
         with self.cursor(ds) as cur:
@@ -698,13 +761,20 @@ class JDBCManager:
         """若未指定 schema，尝试在用户 schema 下找表。"""
         user = ds.username or "public"
         with self.cursor(ds) as cur:
-            cur.execute(
-                "SELECT table_schema FROM information_schema.tables "
-                "WHERE table_name = ? ORDER BY table_schema = ?, table_schema",
-                [table, user],
-            )
+            if ds.type == "db2":
+                cur.execute(
+                    "SELECT tabschema FROM syscat.tables "
+                    "WHERE tabname = ? ORDER BY tabschema = ?, tabschema",
+                    [table, user],
+                )
+            else:
+                cur.execute(
+                    "SELECT table_schema FROM information_schema.tables "
+                    "WHERE table_name = ? ORDER BY table_schema = ?, table_schema",
+                    [table, user],
+                )
             row = cur.fetchone()
-        return str(row[0]) if row else "public"
+        return str(row[0]) if row else (user if ds.type == "db2" else "public")
 
     # ------------------------------------------------------------------
     # 显式事务（BEGIN / COMMIT / ROLLBACK）

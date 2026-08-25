@@ -34,6 +34,10 @@
 | TDH Inceptor（星环） | `org.apache.hive.jdbc.HiveDriver` | `jdbc:hive2://host:10000/default` |
 | 其他 Hive 兼容 | `org.apache.hive.jdbc.HiveDriver` | `jdbc:hive2://...` |
 | 其他 PostgreSQL 兼容 | `org.postgresql.Driver` | `jdbc:postgresql://...` |
+| DB2 | `com.ibm.db2.jcc.DB2Driver` | `jdbc:db2://host:50000/db` |
+
+> DB2 驱动（`db2jcc4.jar`）受 IBM 许可限制无法自动下载，请手动放置到 `drivers/` 目录；
+> `type: db2` 走 SYSCAT 目录方言（`syscat.schemata/tables/columns`）。
 
 - 服务部署在服务器上，远程客户端通过 **HTTP（MCP streamable-http）** 调用，也支持 SSE 与本地 stdio。
 - JDBC 桥接通过 `jaydebeapi`（JPype 加载 JVM）。

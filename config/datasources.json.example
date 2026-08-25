@@ -8,7 +8,9 @@
       "jdbc_url": "jdbc:opengauss://127.0.0.1:15432/testdb",
       "username": "gaussdb",
       "password": "{ENC:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}",
-      "jars": ["opengauss-jdbc-5.0.0-og.jar"]
+      "jars": [
+        "opengauss-jdbc-5.0.0-og.jar"
+      ]
     },
     {
       "name": "tdh_inceptor",
@@ -18,7 +20,21 @@
       "jdbc_url": "jdbc:transwarp://127.0.0.1:10000/testdb",
       "username": "tdh",
       "password": "{ENC:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}",
-      "jars": ["inceptor-driver.jar"]
+      "jars": [
+        "inceptor-driver.jar"
+      ]
+    },
+    {
+      "name": "db2_test",
+      "type": "db2",
+      "description": "DB2 示例（驱动 db2jcc4.jar 需手动放入 drivers/）",
+      "driver_class": "com.ibm.db2.jcc.DB2Driver",
+      "jdbc_url": "jdbc:db2://127.0.0.1:50000/sample",
+      "username": "db2inst1",
+      "password": "{ENV:DB2_PASSWORD}",
+      "jars": [
+        "db2jcc4.jar"
+      ]
     }
   ]
 }
