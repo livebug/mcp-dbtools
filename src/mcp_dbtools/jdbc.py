@@ -726,9 +726,10 @@ class JDBCManager:
             for r in rows:
                 dtype = str(r[1])
                 if len(r) > 2 and r[2]:
-                    dtype += f"({r[2]})"
                     if len(r) > 3 and r[3] and int(r[3] or 0) > 0:
-                        dtype += f",{r[3]}"
+                        dtype += f"({r[2]},{r[3]})"
+                    else:
+                        dtype += f"({r[2]})"
                 cols.append(
                     {
                         "column": str(r[0]),
