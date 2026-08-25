@@ -22,7 +22,9 @@ from mcp.server.fastmcp import FastMCP
 
 from .audit_page import AUDIT_HTML
 from .config import ConfigError, load_settings
+from . import datasources_page as ds_page
 from .export import ExportManager
+from .home_page import HOME_HTML
 from .jdbc import JDBCManager
 from .logs_page import LOGS_HTML, tail_lines
 from .monitor import Monitor, set_client_info
@@ -195,6 +197,34 @@ def build_app(settings: Any):
 
     app.router.routes.insert(0, Route("/logs/api", logs_api))
     app.router.routes.insert(0, Route("/logs", logs_page))
+
+    # ---------- 首页导航 ----------
+    async def home_page(request: Request):
+        return HTMLResponse(HOME_HTML)
+
+    app.router.routes.insert(0, Route("/", home_page))
+
+    # ---------- 数据源管理页面 / API（密码自动加密） ----------
+    async def datasources_page(request: Request):
+        return HTMLResponse(ds_page.page_html())
+
+    async def datasources_api(request: Request):
+        return JSONResponse(ds_page.api_list(settings.config_path))
+
+    async def datasources_save(request: Request):
+        form = await request.form()
+        ok, msg = ds_page.api_save(settings.config_path, dict(form))
+        return JSONResponse({"ok": True, "message": msg} if ok else {"ok": False, "error": msg})
+
+    async def datasources_delete(request: Request):
+        form = await request.form()
+        ok, msg = ds_page.api_delete(settings.config_path, (form.get("name") or "").strip())
+        return JSONResponse({"ok": True, "message": msg} if ok else {"ok": False, "error": msg})
+
+    app.router.routes.insert(0, Route("/datasources/api/save", datasources_save, methods=["POST"]))
+    app.router.routes.insert(0, Route("/datasources/api/delete", datasources_delete, methods=["POST"]))
+    app.router.routes.insert(0, Route("/datasources/api", datasources_api))
+    app.router.routes.insert(0, Route("/datasources", datasources_page))
 
     # ---------- 导出文件下载 ----------
     from starlette.responses import FileResponse
