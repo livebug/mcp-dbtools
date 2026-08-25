@@ -51,6 +51,14 @@ label{display:block;font-size:12px;color:var(--muted);margin-bottom:3px}
 input,select,textarea{width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:#0b1220;color:var(--text);font-size:13px}
 .actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
 .hint{font-size:12px;color:var(--muted);margin-top:6px}
+/* toast 提示 */
+#toast{position:fixed;top:20px;right:20px;z-index:99;display:flex;flex-direction:column;gap:8px}
+.toast-item{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--acc);border-radius:8px;padding:10px 16px;font-size:13px;box-shadow:0 4px 14px rgba(0,0,0,.4);opacity:0;transform:translateX(20px);transition:all .25s}
+.toast-item.show{opacity:1;transform:none}
+.toast-item.ok{border-left-color:var(--ok)}
+.toast-item.err{border-left-color:var(--err)}
+#refreshInfo{display:inline-block;color:var(--muted);font-size:12px;margin-left:10px}
+button:disabled{opacity:.5;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -58,7 +66,11 @@ input,select,textarea{width:100%;padding:7px 10px;border:1px solid var(--border)
 <h1>🔌 数据源管理</h1>
 <div class="sub">添加 / 编辑 / 删除数据库链接 · 密码自动加密为 <span class="mono">{ENC:...}</span> 存储</div>
 
-<div class="toolbar"><button onclick="openForm()">＋ 添加数据源</button></div>
+<div class="toolbar">
+<button onclick="openForm()">＋ 添加数据源</button>
+<button class="ghost" onclick="load(true)">🔄 刷新</button>
+<span id="refreshInfo"></span>
+</div>
 
 <table>
 <thead><tr><th>名称</th><th>类型</th><th>JDBC URL</th><th>驱动</th><th>用户名</th><th>密码</th><th>Jars</th><th>操作</th></tr></thead>
@@ -99,6 +111,16 @@ input,select,textarea{width:100%;padding:7px 10px;border:1px solid var(--border)
 <script>
 let editing = null;
 
+function showToast(msg, type) {
+  const box = document.getElementById('toast');
+  const el = document.createElement('div');
+  el.className = 'toast-item ' + (type || '');
+  el.textContent = msg;
+  box.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 300); }, 3000);
+}
+
 function pwdBadge(p) {
   if (!p) return '<span class="badge plain">无</span>';
   if (p.startsWith('{ENC:')) return '<span class="badge enc">ENC 密文</span>';
@@ -106,10 +128,18 @@ function pwdBadge(p) {
   return '<span class="badge plain">明文 ⚠</span>';
 }
 
-function load() {
-  fetch('/datasources/api').then(r => r.json()).then(ds => {
+function load(manual) {
+  const info = document.getElementById('refreshInfo');
+  if (manual) info.textContent = '加载中…';
+  fetch('/datasources/api').then(r => {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(ds => {
     const tb = document.getElementById('rows');
-    tb.innerHTML = ds.map(d => `<tr>
+    if (!ds || ds.length === 0) {
+      tb.innerHTML = '<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">暂无数据源，点击「添加数据源」创建</td></tr>';
+    } else {
+      tb.innerHTML = ds.map(d => `<tr>
       <td><b>${d.name}</b><br><span class="muted">${d.description || ''}</span></td>
       <td>${d.type}</td>
       <td class="mono">${d.jdbc_url}</td>
@@ -120,6 +150,12 @@ function load() {
       <td><button class="ghost" onclick='edit(${JSON.stringify(d)})'>编辑</button>
           <button class="danger" onclick="del('${d.name}')">删除</button></td>
     </tr>`).join('');
+    }
+    info.textContent = '已刷新 ' + new Date().toLocaleTimeString();
+    if (manual) showToast('列表已刷新（共 ' + (ds ? ds.length : 0) + ' 个数据源）', 'ok');
+  }).catch(e => {
+    info.textContent = '';
+    if (manual) showToast('刷新失败: ' + e.message, 'err');
   });
 }
 
@@ -149,6 +185,8 @@ function edit(d) {
 function closeForm() { document.getElementById('formModal').classList.remove('open'); }
 
 function save() {
+  const btn = document.querySelector('#formModal button[type=submit]');
+  btn.disabled = true;
   const body = new URLSearchParams({
     name: document.getElementById('f_name').value.trim(),
     type: document.getElementById('f_type').value,
@@ -161,7 +199,16 @@ function save() {
     original: editing || '',
   });
   fetch('/datasources/api/save', {method: 'POST', body}).then(r => r.json()).then(d => {
-    if (d.ok) { closeForm(); load(); } else { alert('保存失败: ' + (d.error || '')); }
+    btn.disabled = false;
+    if (d.ok) {
+      closeForm(); load();
+      showToast('✅ ' + d.message, 'ok');
+    } else {
+      showToast('保存失败: ' + (d.error || ''), 'err');
+    }
+  }).catch(e => {
+    btn.disabled = false;
+    showToast('保存出错: ' + e.message, 'err');
   });
   return false;
 }
@@ -170,12 +217,14 @@ function del(name) {
   if (!confirm('确认删除数据源 ' + name + ' ？')) return;
   const body = new URLSearchParams({name});
   fetch('/datasources/api/delete', {method: 'POST', body}).then(r => r.json()).then(d => {
-    if (d.ok) load(); else alert('删除失败: ' + (d.error || ''));
-  });
+    if (d.ok) { load(); showToast('🗑 ' + d.message, 'ok'); }
+    else showToast('删除失败: ' + (d.error || ''), 'err');
+  }).catch(e => showToast('删除出错: ' + e.message, 'err'));
 }
 
 load();
 </script>
+<div id="toast"></div>
 </body>
 </html>
 """
