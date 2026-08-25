@@ -510,7 +510,7 @@ class JDBCManager:
         try:
             with self.cursor(ds) as cur:
                 cur.execute(sql)
-                cols = [d[0] for d in (cur.description or [])]
+                cols = [_jsonable(d[0]) for d in (cur.description or [])]
                 rows: list[tuple] = []
                 truncated = False
                 while True:
@@ -846,7 +846,7 @@ class JDBCManager:
             cur = conn.cursor()
             try:
                 cur.execute(sql)
-                cols = [d[0] for d in (cur.description or [])]
+                cols = [_jsonable(d[0]) for d in (cur.description or [])]
                 rows: list[tuple] = []
                 truncated = False
                 while True:
@@ -1090,7 +1090,7 @@ class JDBCManager:
                 with self.cursor(ds) as cur:
                     cur.execute(sql)
                     if cur.description:
-                        cols = [d[0] for d in cur.description]
+                        cols = [_jsonable(d[0]) for d in cur.description]
                         rows: list[tuple] = []
                         truncated = False
                         while True:

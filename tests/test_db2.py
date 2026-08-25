@@ -163,3 +163,25 @@ def test_is_alive_uses_ping_sql():
     m, ds = make_manager([])
     assert m._is_alive(FakeConn(), m._ping_sql(ds)) is True
     assert executed == ["SELECT 1 FROM SYSIBM.SYSDUMMY1"]
+
+
+def test_columns_converted_via_jsonable():
+    """列名必须是 Python 原生 str（DB2 返回 java.lang.String 会破坏 FastMCP 序列化）。"""
+    from mcp_dbtools.jdbc import _jsonable
+
+    class JString:
+        """模拟 java.lang.String（JPype 包装）。"""
+        __module__ = "java.lang"
+
+        def __init__(self, s):
+            self._s = s
+
+        def toString(self):
+            return self._s
+
+    # _jsonable 对 Java 对象应返回原生 str
+    converted = _jsonable(JString("ORDER_ID"))
+    assert converted == "ORDER_ID"
+    assert type(converted) is str
+    # 非 Java 原生 str 原样返回
+    assert _jsonable("CUST_NAME") == "CUST_NAME"
