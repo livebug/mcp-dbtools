@@ -119,7 +119,10 @@ def _jsonable(value: Any) -> Any:
             except Exception:
                 pass
         if hasattr(value, "toString"):
-            return str(value.toString())
+            try:
+                return str(value.toString())
+            except Exception:
+                pass
     return str(value)
 
 
