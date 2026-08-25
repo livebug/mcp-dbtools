@@ -6,7 +6,7 @@
 
 | 组件 | 要求 |
 | --- | --- |
-| Python | **3.12（64 位）**，与离线包对应；安装时勾选 "Add to PATH" |
+| Python | **3.13（64 位）**，与离线包对应；安装时勾选 "Add to PATH" |
 | JDK | **JDK 11+**（JPype 需要 JVM，推荐 17/21）。`java -version` 验证 |
 | 防火墙 | 放行 8000 端口（远程客户端访问时） |
 
@@ -95,16 +95,16 @@ mcp-dbtools-windows-offline/
 
 ## 注意事项
 
-- 离线包对应 **Python 3.12**：目标机 Python 版本必须一致（3.12.x 均可）
+- 离线包对应 **Python 3.13**：目标机 Python 版本必须一致（3.13.x 均可）
 - DB2 驱动 `db2jcc4.jar` 受 IBM 许可需自行获取放入 `drivers\`
 - 服务地址为 `http://<本机IP>:8000/mcp`，供 MCP 客户端（Claude/VS Code/dsh）连接
 
 ## 重新生成 Windows wheel 包（联网机器上执行）
 
 ```bash
-# 在有网络的机器（任意平台）执行，生成 win_amd64 + Python 3.12 的 wheel
+# 生成 win_amd64 + Python 3.13 的 wheel（与 Linux 包同版本）
 pip download -r requirements.txt -d offline_packages_win \
-  --platform win_amd64 --python-version 3.12 --implementation cp --abi cp312 \
+  --platform win_amd64 --python-version 3.13 --implementation cp --abi cp313 \
   --only-binary=:all:
 ```
 

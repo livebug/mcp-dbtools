@@ -299,7 +299,7 @@ class JDBCManager:
             pool = self._pools.get(ds.name) or deque()
             while pool:
                 conn = pool.popleft()
-                if self._is_alive(conn):
+                if self._is_alive(conn, self._ping_sql(ds)):
                     self._touch(ds.name, connected=True)
                     return conn
                 try:
@@ -323,11 +323,18 @@ class JDBCManager:
                     pass
 
     @staticmethod
-    def _is_alive(conn: jaydebeapi.Connection) -> bool:
+    def _ping_sql(ds: DataSource) -> str:
+        """按方言返回连接探测 SQL。DB2 不允许无 FROM 的 SELECT，需 SYSIBM.SYSDUMMY1。"""
+        if ds.type == "db2":
+            return "SELECT 1 FROM SYSIBM.SYSDUMMY1"
+        return "SELECT 1"
+
+    @staticmethod
+    def _is_alive(conn: jaydebeapi.Connection, ping_sql: str = "SELECT 1") -> bool:
         try:
             cur = conn.cursor()
             try:
-                cur.execute("SELECT 1")
+                cur.execute(ping_sql)
                 cur.fetchall()
             finally:
                 cur.close()
@@ -374,7 +381,7 @@ class JDBCManager:
         try:
             conn = self._acquire(ds)
             try:
-                alive = self._is_alive(conn)
+                alive = self._is_alive(conn, self._ping_sql(ds))
             finally:
                 self._release(ds, conn)
         except JDBCError as exc:

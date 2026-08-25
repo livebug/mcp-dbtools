@@ -19,7 +19,7 @@ echo [2/3] 创建虚拟环境并离线安装依赖...
 if not exist .venv (
     python -m venv .venv
 )
-.venv\Scripts\pip install --no-index --find-links=offline_packages_win -r requirements.txt
+.venv\Scripts\pip install --no-index --find-links=offline_packages_win -e .
 if errorlevel 1 (
     echo 依赖安装失败，请检查 offline_packages_win 目录完整性
     pause & exit /b 1

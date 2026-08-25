@@ -127,3 +127,39 @@ def test_db2_guess_schema_fallback():
     m, ds = make_manager([])
     schema = m._guess_schema(ds, "NOPE")
     assert schema == "db2inst1"  # 回退到用户名 schema
+
+
+def test_db2_ping_sql():
+    """DB2 探测 SQL 必须带 FROM（DB2 不允许无 FROM 的 SELECT）。"""
+    m, ds = make_manager([])
+    assert m._ping_sql(ds) == "SELECT 1 FROM SYSIBM.SYSDUMMY1"
+    assert "FROM" in m._ping_sql(ds)
+
+
+def test_non_db2_ping_sql():
+    m, ds = make_manager([])
+    ds.type = "gaussdb"
+    assert m._ping_sql(ds) == "SELECT 1"
+
+
+def test_is_alive_uses_ping_sql():
+    """_is_alive 应把方言探测 SQL 传给游标（DB2 场景验证）。"""
+    executed = []
+
+    class FakeCur:
+        def execute(self, sql):
+            executed.append(sql)
+
+        def fetchall(self):
+            return []
+
+        def close(self):
+            pass
+
+    class FakeConn:
+        def cursor(self):
+            return FakeCur()
+
+    m, ds = make_manager([])
+    assert m._is_alive(FakeConn(), m._ping_sql(ds)) is True
+    assert executed == ["SELECT 1 FROM SYSIBM.SYSDUMMY1"]
