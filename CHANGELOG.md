@@ -10,6 +10,10 @@
 - **DB2 数据源支持**：新增 `db2` 方言（SYSCAT 目录元数据、`SELECT 1 FROM SYSIBM.SYSDUMMY1`
   探测），新增 DB2 集成测试 `tests/test_db2_integration.py` 与 `db2_test` 数据源配置
   （`config/datasources.json` / `.env.example`），文档补充 DB2 支持说明。
+- **MySQL 数据源支持**：新增 `mysql` 方言（information_schema 元数据，排除系统库，
+  列注释读取），新增单元测试 `tests/test_mysql.py` 与集成测试 `tests/test_mysql_integration.py`、
+  `mysql_test` 数据源配置；JDBC URL 需带 `characterEncoding=UTF-8` 以正确读取中文。
+  集成测试依赖 Docker `mysql:8` 测试库（`mysql-test` 容器）。
 
 ### 修复
 

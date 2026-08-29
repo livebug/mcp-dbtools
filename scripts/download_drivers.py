@@ -6,8 +6,11 @@
 
 说明:
 - openGauss / GaussDB：从 Maven Central 下载官方 opengauss-jdbc 驱动。
+- MySQL：从 Maven Central 下载官方 mysql-connector-j 驱动。
 - TDH(Inceptor)：商业驱动，无法公开下载。请从星环(TDH)客户端安装包中取得
   inceptor-driver.jar 后手工放入 drivers/ 目录。
+- DB2：商业驱动（db2jcc4.jar），可从 DB2 服务器 java 目录（如
+  /opt/ibm/db2/V*/java/db2jcc4.jar）拷贝放入 drivers/ 目录。
 """
 
 from __future__ import annotations
@@ -21,6 +24,11 @@ OPENGAUSS_VERSION = "5.0.0-og"
 OPENGAUSS_MAVEN = (
     "https://repo1.maven.org/maven2/org/opengauss/opengauss-jdbc/"
     "{version}/opengauss-jdbc-{version}.jar"
+)
+MYSQL_VERSION = "8.4.0"
+MYSQL_MAVEN = (
+    "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/"
+    "{version}/mysql-connector-j-{version}.jar"
 )
 
 
@@ -42,6 +50,12 @@ def main() -> int:
     parser.add_argument(
         "--skip-gauss", action="store_true", help="跳过 openGauss 驱动下载"
     )
+    parser.add_argument(
+        "--mysql-version", default=MYSQL_VERSION, help="MySQL JDBC 驱动版本"
+    )
+    parser.add_argument(
+        "--skip-mysql", action="store_true", help="跳过 MySQL 驱动下载"
+    )
     args = parser.parse_args()
 
     drivers = Path(args.drivers_dir)
@@ -58,6 +72,19 @@ def main() -> int:
                 )
             except Exception as exc:  # noqa: BLE001
                 print(f"下载 openGauss 驱动失败: {exc}", file=sys.stderr)
+                return 1
+
+    if not args.skip_mysql:
+        dest = drivers / f"mysql-connector-j-{args.mysql_version}.jar"
+        if dest.exists():
+            print(f"已存在，跳过: {dest.name}")
+        else:
+            try:
+                download(
+                    MYSQL_MAVEN.format(version=args.mysql_version), dest
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"下载 MySQL 驱动失败: {exc}", file=sys.stderr)
                 return 1
 
     # TDH 驱动检查

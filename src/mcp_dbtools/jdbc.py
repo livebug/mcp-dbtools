@@ -64,6 +64,25 @@ _DB2_COLUMNS_SQL = (
     "FROM syscat.columns WHERE tabschema = ? AND tabname = ? ORDER BY colno"
 )
 
+# MySQL 方言（information_schema，排除系统库）
+_MYSQL_SYSTEM_SCHEMAS = "('information_schema','mysql','performance_schema','sys')"
+_MYSQL_SCHEMAS_SQL = (
+    "SELECT schema_name FROM information_schema.schemata "
+    f"WHERE schema_name NOT IN {_MYSQL_SYSTEM_SCHEMAS} ORDER BY 1"
+)
+_MYSQL_TABLES_SQL = (
+    "SELECT table_schema, table_name, table_type "
+    "FROM information_schema.tables "
+    f"WHERE table_schema NOT IN {_MYSQL_SYSTEM_SCHEMAS} "
+    "ORDER BY 1, 2"
+)
+_MYSQL_COLUMNS_SQL = (
+    "SELECT column_name, data_type, is_nullable, column_default, column_comment "
+    "FROM information_schema.columns "
+    "WHERE table_schema = ? AND table_name = ? "
+    "ORDER BY ordinal_position"
+)
+
 
 class JDBCError(Exception):
     """JDBC 操作异常。"""
@@ -633,6 +652,8 @@ class JDBCManager:
             sql = _HIVE_SCHEMAS_SQL
         elif ds.type == "db2":
             sql = _DB2_SCHEMAS_SQL
+        elif ds.type == "mysql":
+            sql = _MYSQL_SCHEMAS_SQL
         else:
             sql = _PG_SCHEMAS_SQL
         with self.cursor(ds) as cur:
@@ -673,6 +694,29 @@ class JDBCManager:
                 sql = (
                     "SELECT tabschema, tabname, type FROM syscat.tables "
                     "WHERE tabschema = ? ORDER BY tabname"
+                )
+                params.append(schema)
+            with self.cursor(ds) as cur:
+                cur.execute(sql, params)
+                rows = cur.fetchall()
+            tables = []
+            for r in rows:
+                s, t, tt = (str(r[0]), str(r[1]), str(r[2] if len(r) > 2 else ""))
+                if search and search.lower() not in t.lower():
+                    continue
+                tables.append({"schema": s, "table": t, "type": tt})
+            return tables
+
+        # MySQL 方言（information_schema，排除系统库）
+        if ds.type == "mysql":
+            sql = _MYSQL_TABLES_SQL
+            params: list[Any] = []
+            if schema:
+                sql = (
+                    "SELECT table_schema, table_name, table_type "
+                    "FROM information_schema.tables "
+                    f"WHERE table_schema = ? AND table_schema NOT IN {_MYSQL_SYSTEM_SCHEMAS} "
+                    "ORDER BY 2"
                 )
                 params.append(schema)
             with self.cursor(ds) as cur:
@@ -764,6 +808,26 @@ class JDBCManager:
                 )
             return cols
 
+        # MySQL 方言（information_schema.COLUMNS，带列注释）
+        if ds.type == "mysql":
+            if not schema:
+                schema = self._guess_schema(ds, table)
+            with self.cursor(ds) as cur:
+                cur.execute(_MYSQL_COLUMNS_SQL, [schema, table])
+                rows = cur.fetchall()
+            cols = []
+            for r in rows:
+                cols.append(
+                    {
+                        "column": str(r[0]),
+                        "data_type": str(r[1]),
+                        "nullable": "Y" if len(r) > 2 and str(r[2]).upper() == "YES" else "N",
+                        "default": str(r[3]) if len(r) > 3 and r[3] is not None else "",
+                        "comment": str(r[4]) if len(r) > 4 and r[4] else "",
+                    }
+                )
+            return cols
+
         if not schema:
             schema = self._guess_schema(ds, table)
         with self.cursor(ds) as cur:
@@ -798,7 +862,7 @@ class JDBCManager:
                     [table, user],
                 )
             row = cur.fetchone()
-        return str(row[0]) if row else (user if ds.type == "db2" else "public")
+        return str(row[0]) if row else (user if ds.type in ("db2", "mysql") else "public")
 
     # ------------------------------------------------------------------
     # 显式事务（BEGIN / COMMIT / ROLLBACK）

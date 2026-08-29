@@ -29,6 +29,16 @@
       "username": "db2inst1",
       "password": "{ENV:DB2_PASSWORD}",
       "jars": ["db2jcc4.jar"]
+    },
+    {
+      "name": "mysql_test",
+      "type": "mysql",
+      "description": "Docker MySQL 8 测试库（mysql-test）",
+      "driver_class": "com.mysql.cj.jdbc.Driver",
+      "jdbc_url": "jdbc:mysql://mysql-test:3306/testdb?useUnicode=true&characterEncoding=UTF-8",
+      "username": "mysql",
+      "password": "{ENV:MYSQL_PASSWORD}",
+      "jars": ["mysql-connector-j-8.4.0.jar"]
     }
   ]
 }
