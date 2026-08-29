@@ -47,6 +47,10 @@ module.exports = {
         // 数据源密码（{ENV:VAR} 引用，避免明文写入 datasources.json）
         GAUSS_PASSWORD: "",
         TDH_PASSWORD: "",
+        DB2_PASSWORD: "",
+        MYSQL_PASSWORD: "",
+        // {ENC:...} 密码解密主密钥（datasources.json 使用加密串时需设置，见 .env.example）
+        MCP_DBTOOLS_SECRET_KEY: "",
       },
       out_file: "/opt/mcp-dbtools/logs/out.log",
       error_file: "/opt/mcp-dbtools/logs/error.log",

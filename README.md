@@ -1,6 +1,6 @@
 # mcp-dbtools
 
-> **v1.0.0** · 生产可用稳定版 · [更新日志](CHANGELOG.md)
+> **v1.0.3** · 生产可用稳定版 · [更新日志](CHANGELOG.md)
 
 基于 **Python + JDBC** 的数据库 MCP（Model Context Protocol）服务，用于通过 LLM 客户端查询数据库。
 
@@ -8,7 +8,7 @@
 
 ## 功能特性
 
-- **多数据源**：GaussDB / openGauss / TDH Inceptor / Hive / PostgreSQL 兼容库（按方言自动适配）
+- **多数据源**：GaussDB / openGauss / TDH Inceptor / Hive / DB2 / MySQL / PostgreSQL 兼容库（按方言自动适配）
 - **安全**：Bearer 鉴权 · 写操作二次确认 · 密码加密存储（`{ENC:...}` AES-256-GCM）· 熔断 · 按 IP 限流 · 行数上限
 - **并发与性能**：JDBC 连接池 · 工具异步化 · 元数据 TTL 缓存
 - **可观测性**：审计（JSONL 轮转 + SQLite）· 人工审计页面 `/audit` · 监控 `/metrics` · 服务日志 `/logs` · 健康检查 `/health`
@@ -35,6 +35,7 @@
 | 其他 Hive 兼容 | `org.apache.hive.jdbc.HiveDriver` | `jdbc:hive2://...` |
 | 其他 PostgreSQL 兼容 | `org.postgresql.Driver` | `jdbc:postgresql://...` |
 | DB2 | `com.ibm.db2.jcc.DB2Driver` | `jdbc:db2://host:50000/db` |
+| MySQL / MariaDB | `com.mysql.cj.jdbc.Driver` | `jdbc:mysql://host:3306/db?useUnicode=true&characterEncoding=UTF-8` |
 
 > DB2 驱动（`db2jcc4.jar`）受 IBM 许可限制无法自动下载，请手动放置到 `drivers/` 目录；
 > `type: db2` 走 SYSCAT 目录方言（`syscat.schemata/tables/columns`）。
@@ -50,6 +51,8 @@ flowchart LR
     S -- jaydebeapi / JPype --> J[JVM]
     J -- "JDBC (jdbc:opengauss://)" --> G[GaussDB / openGauss 容器]
     J -- "JDBC (jdbc:hive2://)" --> T[TDH Inceptor]
+    J -- "JDBC (jdbc:mysql://)" --> M[MySQL / MariaDB]
+    J -- "JDBC (jdbc:db2://)" --> D[DB2]
     S --> H[/health 健康检查/]
 ```
 
@@ -82,7 +85,7 @@ mcp-dbtools/
 ├── config/              # 数据源配置
 ├── drivers/             # JDBC 驱动 jar（脚本下载 / 手工放置）
 ├── scripts/
-│   ├── download_drivers.py    # 下载 openGauss 驱动
+│   ├── download_drivers.py    # 下载 openGauss / MySQL 驱动
 │   ├── encrypt_password.py    # 密码加密工具（生成 {ENC:...}）
 │   ├── mcp_client_demo.py     # HTTP 客户端演示
 │   ├── sql/                   # SQL 脚本根目录（execute_script 使用）

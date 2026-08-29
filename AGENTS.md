@@ -6,7 +6,7 @@
 ## 项目是什么
 
 基于 **Python + JDBC** 的数据库 MCP 服务，通过 HTTP（streamable-http）让 LLM 客户端查询
-GaussDB / openGauss / TDH Inceptor / Hive / PostgreSQL 等数据库。JVM 桥接用 jaydebeapi。
+GaussDB / openGauss / TDH Inceptor / Hive / DB2 / MySQL / PostgreSQL 等数据库。JVM 桥接用 jaydebeapi。
 
 ## 构建与测试
 
@@ -32,7 +32,7 @@ GAUSS_PASSWORD=... . .venv/bin/activate && python -m mcp_dbtools --transport str
 | --- | --- |
 | `src/mcp_dbtools/server.py` | 服务入口：HTTP 路由、鉴权、限流、健康检查、审计/日志页面 |
 | `src/mcp_dbtools/jdbc.py` | JDBC 连接池、查询、元数据缓存、熔断、显式事务、健康探测 |
-| `src/mcp_dbtools/tools.py` | 20 个 MCP 工具定义 |
+| `src/mcp_dbtools/tools.py` | 19 个 MCP 工具定义 |
 | `src/mcp_dbtools/config.py` | 配置加载（datasources.json + `MCP_DBTOOLS_*` 环境变量 + `{ENC:...}` 密码解密） |
 | `src/mcp_dbtools/monitor.py` | 审计（JSONL 轮转 + SQLite）、执行历史、指标 |
 | `src/mcp_dbtools/export.py` | 异步大数据导出 + 过期文件清理 |
