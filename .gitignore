@@ -15,9 +15,12 @@ venv/
 
 # 离线部署产物
 wheels/
+wheels_linux/
+wheels_windows/
 offline/
 offline_packages_win/
 *.tar.gz
+*.zip
 
 # JDBC 驱动 jar 包（用 scripts/download_drivers.py 下载）
 drivers/*.jar

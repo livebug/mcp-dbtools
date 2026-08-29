@@ -14,6 +14,11 @@
   列注释读取），新增单元测试 `tests/test_mysql.py` 与集成测试 `tests/test_mysql_integration.py`、
   `mysql_test` 数据源配置；JDBC URL 需带 `characterEncoding=UTF-8` 以正确读取中文。
   集成测试依赖 Docker `mysql:8` 测试库（`mysql-test` 容器）。
+- **离线部署双平台与升级**：`scripts/build_offline.sh` 支持 `--platform linux|windows|all`
+  生成 Linux（tar.gz）与 Windows（zip）离线包；新增 Linux 升级脚本
+  `deploy/upgrade_offline.sh`（包内 `upgrade.sh`）与 Windows 升级脚本
+  `deploy/windows/upgrade_offline.bat`，升级时自动备份并保留 `.env`、`config/datasources.json`
+  与自定义 JDBC 驱动 jar；重写 Windows 安装脚本 `install_offline.bat` 适配离线包结构。
 
 ### 修复
 

@@ -13,13 +13,24 @@
 ## 部署步骤
 
 ```
-1. 解压 mcp-dbtools-windows-offline.zip 到目标目录（如 D:\mcp-dbtools）
-2. 双击 install_offline.bat（自动建 venv + 离线装依赖）
-3. 配置 config\datasources.json（复制 datasources.json.example 修改）
-4. 把 JDBC 驱动 jar 放入 drivers\ 目录
+1. 解压 mcp-dbtools-offline-windows-*.zip 到目标目录（如 D:\mcp-dbtools）
+2. 双击 install_offline.bat（自动建 venv + 离线装依赖 + 生成 .env/datasources.json）
+3. 修改 .env（端口/鉴权 Token）与 config\datasources.json（数据源）
+4. 确认 JDBC 驱动 jar 已在 drivers\ 目录
 5. 启动：.venv\Scripts\python -m mcp_dbtools --transport streamable-http
 6. 验证：浏览器打开 http://127.0.0.1:8000/mcp 应返回 MCP 协议信息
 ```
+
+## 升级（已有旧版本安装）
+
+```
+1. 解压新版 mcp-dbtools-offline-windows-*.zip 到任意目录（如 D:\tmp\new）
+2. 执行 D:\tmp\new\upgrade_offline.bat D:\mcp-dbtools
+   （D:\mcp-dbtools 为旧安装目录；会自动备份 .env/datasources.json、更新代码与依赖、重启服务）
+3. 或把新版离线包直接解压覆盖到旧安装目录，然后运行该目录下的 upgrade_offline.bat
+```
+
+> 升级会**保留**你的 `.env`、`config\datasources.json` 和自定义 JDBC 驱动 jar，不会丢失配置。
 
 ## 数据源配置（config/datasources.json）
 
@@ -61,9 +72,9 @@
 npm install -g pm2
 npm install -g pm2-windows-startup   :: Windows 开机自启支持
 
-:: 2. 编辑 deploy\ecosystem-windows.config.cjs，把 D:/mcp-dbtools 改成你的部署目录
+:: 2. 编辑 ecosystem-windows.config.cjs，把 D:/mcp-dbtools 改成你的部署目录
 :: 3. 启动
-pm2 start deploy\ecosystem-windows.config.cjs
+pm2 start ecosystem-windows.config.cjs
 pm2 save
 pm2-startup install                   :: 注册开机自启
 
@@ -81,16 +92,21 @@ pm2 stop mcp-dbtools
 ## 目录结构
 
 ```
-mcp-dbtools-windows-offline/
-├── install_offline.bat        # 一键离线安装
+mcp-dbtools-offline-windows-*.zip 解压后:
+├── install_offline.bat        # 一键离线安装（建 venv + 装依赖 + 生成配置）
+├── upgrade_offline.bat        # 离线升级（保留用户配置，重启服务）
 ├── requirements.txt
+├── .env.example               # 环境变量示例（安装时生成 .env）
 ├── README-windows.md          # 本说明
-├── offline_packages_win/      # Windows wheel（32 个包，8.5MB）
-├── deploy/
-│   └── ecosystem-windows.config.cjs   # pm2 配置（Windows 版）
+├── dist/                      # 项目 wheel
+├── offline_packages_win/      # Windows 依赖 wheel（32 个包）
+├── ecosystem-windows.config.cjs   # pm2 配置（Windows 版）
 ├── config/
-│   └── datasources.json.example
-└── drivers/                   # 放 JDBC 驱动 jar（如 db2jcc4.jar）
+│   └── datasources.json.example   # 数据源配置示例（安装时生成 datasources.json）
+├── scripts/
+│   └── encrypt_password.py    # 密码加密工具
+├── drivers/                   # 放 JDBC 驱动 jar（如 db2jcc4.jar）
+└── docs/
 ```
 
 ## 注意事项
@@ -99,13 +115,14 @@ mcp-dbtools-windows-offline/
 - DB2 驱动 `db2jcc4.jar` 受 IBM 许可需自行获取放入 `drivers\`
 - 服务地址为 `http://<本机IP>:8000/mcp`，供 MCP 客户端（Claude/VS Code/dsh）连接
 
-## 重新生成 Windows wheel 包（联网机器上执行）
+## 重新生成 Windows 离线包（联网机器上执行）
 
 ```bash
-# 生成 win_amd64 + Python 3.13 的 wheel（与 Linux 包同版本）
-pip download -r requirements.txt -d offline_packages_win \
-  --platform win_amd64 --python-version 3.13 --implementation cp --abi cp313 \
-  --only-binary=:all:
+# 一键生成 Windows 离线包（zip，win_amd64 + Python 3.13 wheel）
+bash scripts/build_offline.sh --platform windows
+
+# 或同时生成 Linux + Windows 两个包
+bash scripts/build_offline.sh --platform all
 ```
 
-> 换 Python 版本（如 3.10/3.11/3.13）时改 `--python-version` 与 `--abi` 即可。
+> 换 Python 版本时用环境变量指定，如 `WIN_PYTHON_VER=3.12 bash scripts/build_offline.sh --platform windows`。
