@@ -3,6 +3,22 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- **DB2 数据源支持**：新增 `db2` 方言（SYSCAT 目录元数据、`SELECT 1 FROM SYSIBM.SYSDUMMY1`
+  探测），新增 DB2 集成测试 `tests/test_db2_integration.py` 与 `db2_test` 数据源配置
+  （`config/datasources.json` / `.env.example`），文档补充 DB2 支持说明。
+
+### 修复
+
+- **DB2 结果集抓取兼容**：`execute_query` / `execute_in_transaction` 对无结果集语句
+  （INSERT/DELETE 等）跳过抓取；`fetchmany` 取完最后一行后再抓取抛
+  "result set is closed" 时按正常结束处理（DB2 驱动行为，`fetchall` 不受影响）。
+- **JVM 已启动时驱动补齐**：JVM 已由其他实例启动时用 `jpype.addClassPath` 运行时补齐
+  缺失的驱动 jar，修复多数据源/多测试实例场景下驱动类找不到的问题。
+
 ## [1.0.3] - 2026-08-10
 
 ### 修复

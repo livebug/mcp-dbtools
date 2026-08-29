@@ -256,27 +256,32 @@ class JDBCManager:
         return all_paths
 
     def _ensure_jvm(self) -> None:
-        """确保 JVM 已启动，且 classpath 一次性包含全部数据源的驱动 jar。
+        """确保 JVM 已启动，且 classpath 包含本实例所需的全部驱动 jar。
 
-        JPype 一个进程只允许一个 JVM，且 JVM 启动后无法再追加 classpath；
-        若只按首个连接的数据源启动，后续不同驱动 jar 的数据源会报驱动找不到。
+        JPype 一个进程只允许一个 JVM：首个实例启动时合并全部数据源 jar；
+        若 JVM 已由其他实例启动（如测试多 manager 场景），用 addClassPath
+        运行时补齐本实例缺失的驱动 jar，避免驱动类找不到。
         """
-        if jpype.isJVMStarted():
-            return
         with self._jvm_lock:
-            if jpype.isJVMStarted():
+            if not jpype.isJVMStarted():
+                jars = self._all_jar_paths()
+                logger.info("启动 JVM（classpath 合并 %d 个驱动 jar）", len(jars))
+                try:
+                    if jars:
+                        jpype.startJVM(classpath=jars)
+                    else:
+                        jpype.startJVM()
+                except Exception as exc:  # noqa: BLE001
+                    raise JDBCError(
+                        f"启动 JVM 失败: {exc}（JPype 1.5+ 需要 JDK 11+，请安装 JRE/JDK 11 及以上版本）"
+                    ) from exc
                 return
-            jars = self._all_jar_paths()
-            logger.info("启动 JVM（classpath 合并 %d 个驱动 jar）", len(jars))
-            try:
-                if jars:
-                    jpype.startJVM(classpath=jars)
-                else:
-                    jpype.startJVM()
-            except Exception as exc:  # noqa: BLE001
-                raise JDBCError(
-                    f"启动 JVM 失败: {exc}（JPype 1.5+ 需要 JDK 11+，请安装 JRE/JDK 11 及以上版本）"
-                ) from exc
+            # JVM 已由其他实例启动：补齐本实例所需但缺失的驱动 jar
+            current = set(jpype.getClassPath())
+            for p in self._all_jar_paths():
+                if p not in current:
+                    logger.info("运行时追加驱动 jar 到 classpath: %s", p)
+                    jpype.addClassPath(p)
 
     def _new_connection(self, ds: DataSource) -> jaydebeapi.Connection:
         jars = self._jar_paths(ds)
@@ -513,15 +518,23 @@ class JDBCManager:
                 cols = [_jsonable(d[0]) for d in (cur.description or [])]
                 rows: list[tuple] = []
                 truncated = False
-                while True:
-                    batch = cur.fetchmany(500)
-                    if not batch:
-                        break
-                    rows.extend(batch)
-                    if len(rows) >= limit:
-                        rows = rows[:limit]
-                        truncated = True
-                        break
+                if cur.description:  # 无结果集的语句（如 INSERT/DELETE）无需抓取
+                    while True:
+                        try:
+                            batch = cur.fetchmany(500)
+                        except Exception:  # noqa: BLE001  DB2 取完最后一行后再 fetch 会抛 "result set is closed"
+                            if rows:
+                                break
+                            raise
+                        if not batch:
+                            break
+                        rows.extend(batch)
+                        if len(rows) >= limit:
+                            rows = rows[:limit]
+                            truncated = True
+                            break
+                        if len(batch) < 500:  # 已取到底，避免多余 fetch 触发部分驱动关闭结果集
+                            break
             self._record_success(ds.name)
         except JDBCError:
             self._record_failure(ds.name)
@@ -849,15 +862,23 @@ class JDBCManager:
                 cols = [_jsonable(d[0]) for d in (cur.description or [])]
                 rows: list[tuple] = []
                 truncated = False
-                while True:
-                    batch = cur.fetchmany(500)
-                    if not batch:
-                        break
-                    rows.extend(batch)
-                    if len(rows) >= limit:
-                        rows = rows[:limit]
-                        truncated = True
-                        break
+                if cur.description:  # 无结果集的语句（如 INSERT/DELETE）无需抓取
+                    while True:
+                        try:
+                            batch = cur.fetchmany(500)
+                        except Exception:  # noqa: BLE001  DB2 取完最后一行后再 fetch 会抛 "result set is closed"
+                            if rows:
+                                break
+                            raise
+                        if not batch:
+                            break
+                        rows.extend(batch)
+                        if len(rows) >= limit:
+                            rows = rows[:limit]
+                            truncated = True
+                            break
+                        if len(batch) < 500:  # 已取到底，避免多余 fetch 触发部分驱动关闭结果集
+                            break
                 if cur.rowcount is not None and not cols:
                     affected = int(cur.rowcount) if cur.rowcount >= 0 else 0
                 else:
@@ -1094,13 +1115,20 @@ class JDBCManager:
                         rows: list[tuple] = []
                         truncated = False
                         while True:
-                            batch = cur.fetchmany(500)
+                            try:
+                                batch = cur.fetchmany(500)
+                            except Exception:  # noqa: BLE001  DB2 取完最后一行后再 fetch 会抛 "result set is closed"
+                                if rows:
+                                    break
+                                raise
                             if not batch:
                                 break
                             rows.extend(batch)
                             if len(rows) >= limit:
                                 rows = rows[:limit]
                                 truncated = True
+                                break
+                            if len(batch) < 500:  # 已取到底，避免多余 fetch 触发部分驱动关闭结果集
                                 break
                         rec["columns"] = cols
                         rec["rows"] = _rows_to_jsonable(rows)

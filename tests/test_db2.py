@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
+import pytest
+
 from mcp_dbtools.config import DataSource, Settings
 from mcp_dbtools.jdbc import JDBCManager
 
@@ -185,3 +187,64 @@ def test_columns_converted_via_jsonable():
     assert type(converted) is str
     # 非 Java 原生 str 原样返回
     assert _jsonable("CUST_NAME") == "CUST_NAME"
+
+
+def test_db2_fetchmany_exhausted_handled():
+    """DB2 驱动取完最后一行后再次 fetchmany 抛 \"result set is closed\"，应视为正常结束返回已有行。"""
+
+    class ExhaustedCursor:
+        def __init__(self, rows):
+            self._rows = rows
+            self._calls = 0
+            self.description = [("c", None, None, None, None, None, None)]
+
+        def execute(self, sql, params=None):
+            pass
+
+        def fetchmany(self, size):
+            self._calls += 1
+            if self._calls == 1:
+                return list(self._rows)
+            raise RuntimeError("result set is closed")
+
+        def close(self):
+            pass
+
+    m, ds = make_manager([])
+
+    @contextmanager
+    def fake_cursor(data_source):
+        yield ExhaustedCursor([(5,)])
+
+    m.cursor = fake_cursor
+    res = m.execute_query(ds, "SELECT count(*) FROM employees")
+    assert res["row_count"] == 1
+    assert res["rows"][0][0] == 5
+    assert res["truncated"] is False
+
+
+def test_db2_fetchmany_empty_first_raises():
+    """若第一次 fetchmany 就抛异常（无任何行），应向上抛出而非静默吞掉。"""
+
+    class BrokenCursor:
+        def __init__(self):
+            self.description = [("c", None, None, None, None, None, None)]
+
+        def execute(self, sql, params=None):
+            pass
+
+        def fetchmany(self, size):
+            raise RuntimeError("connection lost")
+
+        def close(self):
+            pass
+
+    m, ds = make_manager([])
+
+    @contextmanager
+    def fake_cursor(data_source):
+        yield BrokenCursor()
+
+    m.cursor = fake_cursor
+    with pytest.raises(Exception):
+        m.execute_query(ds, "SELECT count(*) FROM employees")

@@ -5,7 +5,7 @@
       "type": "gaussdb",
       "description": "Docker 测试库 gaussdb-local（openGauss 5.0）",
       "driver_class": "org.opengauss.Driver",
-      "jdbc_url": "jdbc:opengauss://127.0.0.1:5432/gaussdb",
+      "jdbc_url": "jdbc:opengauss://gaussdb:5432/gaussdb",
       "username": "gaussdb",
       "password": "{ENV:GAUSS_PASSWORD}",
       "jars": ["opengauss-jdbc-5.0.0-og.jar"]
@@ -19,6 +19,16 @@
       "username": "tdh",
       "password": "{ENV:TDH_PASSWORD}",
       "jars": ["inceptor-jdbc.jar"]
+    },
+    {
+      "name": "db2_test",
+      "type": "db2",
+      "description": "Docker DB2 社区版测试库（db2server）",
+      "driver_class": "com.ibm.db2.jcc.DB2Driver",
+      "jdbc_url": "jdbc:db2://db2server:50000/testdb",
+      "username": "db2inst1",
+      "password": "{ENV:DB2_PASSWORD}",
+      "jars": ["db2jcc4.jar"]
     }
   ]
 }
