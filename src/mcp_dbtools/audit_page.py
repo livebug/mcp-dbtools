@@ -117,10 +117,39 @@ function fmtTs(ts) { return ts ? ts.replace('T', ' ').slice(0, 19) : '-'; }
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
+// 审计：脚本内容快照暂存（避免把大段 SQL 塞进 HTML 属性）
+const _scripts = [];
 function sqlPreview(args) {
-  const sql = args && (args.sql || args.script_path);
-  if (sql) return '<span class="sql">' + esc(String(sql)) + '</span>';
-  return '<span class="muted">' + esc(JSON.stringify(args || {}).slice(0, 80)) + '</span>';
+  if (!args) return '<span class="muted">-</span>';
+  const content = args.script_content || args.sql || '';
+  const path = args.script_path || args.script_name || '';
+  if (content) {
+    const idx = _scripts.push(String(content)) - 1;
+    const label = '查看脚本' + (path ? ' · ' + esc(String(path)) : '') + '（' + String(content).length + ' 字符）';
+    return '<a class="sql" href="#" onclick="showScript(' + idx + ');return false;">' + label + '</a>';
+  }
+  if (path) return '<span class="sql">' + esc(String(path)) + '</span>';
+  return '<span class="muted">' + esc(JSON.stringify(args).slice(0, 80)) + '</span>';
+}
+
+// 弹窗查看执行的 SQL 脚本（复用 #modal）
+function showScript(idx) {
+  const content = _scripts[idx] || '';
+  $('modalBox').innerHTML =
+    '<h3>执行的 SQL 脚本</h3>' +
+    '<div style="margin-bottom:10px"><button class="ghost" onclick="copyScript()">复制</button>' +
+    '<span class="muted" style="margin-left:8px">' + content.length + ' 字符</span></div>' +
+    '<pre id="scriptBody" style="background:#0b1220;border:1px solid var(--border);border-radius:8px;' +
+    'padding:12px;overflow:auto;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-all;' +
+    'max-height:60vh">' + esc(content) + '</pre>';
+  $('modal').classList.add('open');
+}
+function copyScript() {
+  const el = document.getElementById('scriptBody');
+  if (!el) return;
+  const t = el.textContent;
+  if (navigator.clipboard) navigator.clipboard.writeText(t);
+  toast('脚本已复制');
 }
 
 async function loadSummary() {

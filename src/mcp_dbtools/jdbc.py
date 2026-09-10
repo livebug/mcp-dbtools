@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -1100,6 +1101,61 @@ class JDBCManager:
     # ------------------------------------------------------------------
     # 脚本执行
     # ------------------------------------------------------------------
+    def save_script(
+        self,
+        name: str,
+        content: str,
+        overwrite: bool = False,
+    ) -> dict[str, Any]:
+        """保存 SQL 脚本到脚本根目录（scripts/sql），供 execute_script 按路径执行。
+
+        - 防目录穿越：仅允许写入脚本根目录内部
+        - 已存在同名脚本时需 overwrite=true
+        """
+        if not name or not name.strip():
+            raise JDBCError("脚本名不能为空")
+        if not content or not content.strip():
+            raise JDBCError("脚本内容不能为空")
+
+        root = Path(self.settings.script_root).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        target = (root / name.strip()).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise JDBCError(
+                f"脚本必须写入脚本根目录内（{root}），禁止写到目录外: {name}"
+            ) from exc
+        if target.is_dir():
+            raise JDBCError(f"目标已存在且为目录: {name}")
+        existed = target.exists()
+        if existed and not overwrite:
+            raise JDBCError(f"脚本已存在: {name}（如需覆盖请传 overwrite=true）")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            raise JDBCError(f"写入脚本失败: {exc}") from exc
+
+        rel = str(target.relative_to(root))
+        size = len(content.encode("utf-8"))
+        logger.info("保存脚本: %s (%d 字节)", rel, size)
+        return {
+            "saved": rel,
+            "path": str(target),
+            "bytes": size,
+            "overwritten": existed,
+            "message": f"脚本已保存: {rel}（可用 execute_script 按此路径执行）",
+            # 审计补充：脚本内容快照 + hash（供审计页面查看写入内容）
+            "_audit_extra": {
+                "script_name": rel,
+                "script_content": content,
+                "script_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()[:16],
+                "bytes": size,
+            },
+        }
+
     def resolve_script_file(self, script_path: str) -> Path:
         """解析并校验脚本文件位于脚本根目录内（防目录穿越）。"""
         root = Path(self.settings.script_root).resolve()
@@ -1226,6 +1282,15 @@ class JDBCManager:
             "statement_count": len(results),
             "results": results,
             "total_time_ms": round((_time.monotonic() - t0_total) * 1000.0, 2),
+            # 审计补充：本次实际执行的脚本内容快照（参数已替换）+ hash，
+            # 供审计页面直接查看"执行的 SQL 脚本"（wrap_tool 会提取此字段）
+            "_audit_extra": {
+                "script_content": resolved,
+                "script_raw": text,
+                "script_sha256": hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16],
+                "statement_count": len(results),
+                "params_used": params or {},
+            },
         }
 
 

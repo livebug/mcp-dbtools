@@ -114,6 +114,29 @@ def register_tools(
             return _err(str(exc))
 
     @mcp.tool()
+    @wrap_tool(monitor, "save_script")
+    def save_script(
+        name: Annotated[
+            str, Field(description="脚本文件名，如 etl_daily.sql（保存在脚本根目录内）")
+        ],
+        content: Annotated[
+            str, Field(description="SQL 脚本内容（支持 ${V_DATE} 等占位符）")
+        ],
+        overwrite: Annotated[
+            bool, Field(description="同名脚本已存在时是否覆盖（默认 false）")
+        ] = False,
+    ) -> dict[str, Any] | str:
+        """保存 SQL 脚本到服务器脚本目录（供 execute_script 按路径执行）。
+
+        推荐流程：save_script 落盘（可审计、可复用、可重跑）→ execute_script 执行。
+        写入内容会记入审计（审计页面可查看脚本原文）。
+        """
+        try:
+            return manager.save_script(name, content, overwrite=overwrite)
+        except (ConfigError, JDBCError) as exc:
+            return _err(str(exc))
+
+    @mcp.tool()
     @wrap_tool(monitor, "list_schemas")
     def list_schemas(datasource: DatasourceArg) -> dict[str, Any] | str:
         """列出指定数据源下的所有 schema / 数据库。"""

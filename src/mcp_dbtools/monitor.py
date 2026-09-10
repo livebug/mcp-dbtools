@@ -24,6 +24,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _MAX_ARG_LEN = 500  # 单个参数最大记录长度（防审计日志过大）
+_SCRIPT_MAX_LEN = 200000  # script_content（脚本原文快照）上限，供审计页面查看执行的 SQL
 
 # 当前 HTTP 请求的客户端信息（ASGI 中间件写入，工具执行时读取）
 _client_ctx: contextvars.ContextVar[dict[str, str]] = contextvars.ContextVar(
@@ -64,24 +65,30 @@ def get_client_info() -> dict[str, str]:
     return _client_ctx.get()
 
 
-def _sanitize_value(v: Any) -> Any:
+def _sanitize_value(v: Any, max_len: int | None = None) -> Any:
     """递归裁剪/序列化单个参数值（保留 dict/list 结构，长字符串截断）。"""
+    limit = max_len if max_len is not None else _MAX_ARG_LEN
     if isinstance(v, str):
-        return v if len(v) <= _MAX_ARG_LEN else v[:_MAX_ARG_LEN] + f"...({len(v)}字符)"
+        return v if len(v) <= limit else v[:limit] + f"...({len(v)}字符)"
     if isinstance(v, (int, float, bool)) or v is None:
         return v
     if isinstance(v, dict):
-        return {str(k): _sanitize_value(val) for k, val in v.items()}
+        return {str(k): _sanitize_value(val, _SCRIPT_MAX_LEN if k == "script_content" else None) for k, val in v.items()}
     if isinstance(v, (list, tuple)):
         return [_sanitize_value(x) for x in v]
     return str(v)  # 其它类型兜底转字符串
 
 
 def _sanitize_args(args: dict[str, Any] | None) -> dict[str, Any]:
-    """裁剪过长的参数（如 SQL），避免审计日志无限膨胀；嵌套结构保持为 JSON 对象。"""
+    """裁剪过长的参数（如 SQL），避免审计日志无限膨胀；嵌套结构保持为 JSON 对象。
+
+    特例：`script_content`（执行的脚本原文快照）使用更大的上限，
+    以便审计页面能直接查看执行的 SQL 脚本。
+    """
     if not args:
         return {}
-    return {str(k): _sanitize_value(v) for k, v in args.items()}
+    return {str(k): _sanitize_value(v, _SCRIPT_MAX_LEN if str(k) == "script_content" else None)
+            for k, v in args.items()}
 
 
 class Monitor:
@@ -422,6 +429,12 @@ def wrap_tool(monitor: Monitor, name: str):
             try:
                 result = await asyncio.to_thread(fn, *args, **kwargs)
                 is_err = _is_err_result(result)
+                # 工具可通过返回 dict 里的 _audit_extra 补充审计字段
+                # （如 execute_script 回填执行的脚本内容快照）
+                if isinstance(result, dict) and "_audit_extra" in result:
+                    extra = result.pop("_audit_extra")
+                    if isinstance(extra, dict):
+                        call_args.update(extra)
                 monitor.record_tool_call(
                     name, call_args, time.monotonic() - t0,
                     ok=not is_err,
