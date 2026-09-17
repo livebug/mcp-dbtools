@@ -21,25 +21,39 @@ user-invocable: true
 
 ### 1. 外网构建机：生成离线包
 ```bash
-bash scripts/build_offline.sh
-# 产物: mcp-dbtools-offline-YYYYMMDD.tar.gz（项目 wheel + 依赖 wheels + JDBC 驱动 + 配置 + 脚本）
+bash scripts/build_offline.sh --platform linux     # 或 windows / all
+# 产物: mcp-dbtools-offline-linux-YYYYMMDD.tar.gz / mcp-dbtools-offline-windows-YYYYMMDD.zip
 ```
 
 构建脚本会自动：
 - `pip wheel .` 打项目 wheel（dist/）
-- `pip download -r requirements.txt --only-binary=:all:` 下载全部依赖（含 cryptography 密码加密依赖）
-- 组装：`dist/` + `wheels/` + `drivers/` + `config/` + `scripts/sql` + `scripts/encrypt_password.py` + pm2 配置 + `install.sh`
+- `pip download -r requirements.txt` + `-r requirements-dev.txt` + `setuptools wheel`（`--only-binary`，锁定平台标签）
+  → 运行时依赖 + **开发依赖**（pytest 等）+ **构建后端**（内网可离线 `pip install -e .`）
+- `git archive HEAD` → **完整源码快照 `source/`**（供内网二次开发；不含 `.git`，构建时有未提交改动会 `[WARN]`）
+- 组装：`dist/` + `wheels/` + `drivers/` + `config/` + `scripts/sql` + `scripts/encrypt_password.py`
+  + `docs/` + `README-二次开发.md` + pm2 配置 + `install.sh` / `upgrade.sh`
 
 ### 2. 拷贝到内网并解压安装
 ```bash
-tar xzf mcp-dbtools-offline-YYYYMMDD.tar.gz -C /opt/mcp-dbtools
-cd /opt/mcp-dbtools && bash deploy/install_offline.sh
-# 或包内的: bash mcp-dbtools-offline/install.sh
+tar xzf mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
+bash mcp-dbtools-offline-linux/install.sh /opt/mcp-dbtools
 ```
 
-install 脚本会：建 `.venv` → `pip install --no-index --find-links=wheels dist/*.whl` → 生成 `.env` → `pm2 start`。
+install 脚本会：建 `.venv` → `pip install --no-index --find-links=wheels dist/*.whl` → 生成 `.env` → `pm2 start`，
+并把 `source/`、`docs/`、`README-二次开发.md` 复制到安装目录。
 
-### 3. pm2 运维
+### 3. 内网二次开发（改源码 / 跑测试）
+```bash
+cd /opt/mcp-dbtools/source
+python3 -m venv .venv
+.venv/bin/pip install --no-index --find-links=../wheels -e .        # -e：改代码立即生效
+.venv/bin/pip install --no-index --find-links=../wheels -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+```
+详见 `docs/二次开发指南.md`（包内 `README-二次开发.md`）。
+
+### 4. pm2 运维
+
 ```bash
 pm2 start deploy/ecosystem.config.cjs   # 启动
 pm2 save                                 # 保存进程列表（配合 pm2 startup 开机自启）
@@ -51,9 +65,18 @@ pm2 stop mcp-dbtools                     # 停止
 ## 关键坑（务必遵守）
 - **`deploy/ecosystem.config.cjs` 是 JS 文件，注释必须用 `//`**，不能有 `#`（node require 会语法报错）。
 - 离线包内 `dist/` 必须放子目录，install 脚本引用 `dist/*.whl`。
+- **同版本 wheel 会被 pip 静默跳过**：内网已装 1.0.3 时，`pip install --upgrade dist/mcp_dbtools-1.0.3-*.whl`
+  只提示 `already installed with the same version as the provided wheel`，**代码不会更新但脚本仍报"升级完成"**。
+  升级脚本已用 `--force-reinstall --no-deps` 修掉（依赖另用 `-r requirements.txt` 升级）；
+  同时**打包前应 bump 版本号**，否则内网无法用 `__version__` 判断新旧。
+- **Windows 升级前必须 `pm2 stop mcp-dbtools`**：运行中的进程锁定 venv 内 `.pyd`（jpype 等），pip 覆盖会失败。
+- Windows 升级脚本**不拷贝 `ecosystem-windows.config.cjs`**；改其 `env` 后需 `pm2 delete` + `pm2 start`
+  （`pm2 restart --update-env` 不会重读 cjs）。
+- 升级脚本只更新 `*.example`，**不会合并用户的 `.env` 与 `config/datasources.json`**，新增配置项要手工补。
 - 新增运行时依赖时，需确保 `pip download` 能拉到该 wheel 进 `wheels/`，否则内网 `--no-index` 装不上。
 - 密码加密依赖 `cryptography` 必须在 requirements.txt 中（已含），否则 `{ENC:...}` 配置无法解密。
+- 源码快照来自 `git archive HEAD`，**未提交改动不会进包**（构建会 `[WARN]`）→ 打包前先提交。
 
 ## 输出
-- 离线包路径：`<项目根>/mcp-dbtools-offline-YYYYMMDD.tar.gz`
-- 内网安装与 pm2 状态
+- 离线包路径：`<项目根>/mcp-dbtools-offline-linux-YYYYMMDD.tar.gz` / `...-windows-YYYYMMDD.zip`
+- 内网安装与 pm2 状态；二次开发环境（`source/` + `-e` 安装）是否可用

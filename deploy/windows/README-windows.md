@@ -24,13 +24,40 @@
 ## 升级（已有旧版本安装）
 
 ```
-1. 解压新版 mcp-dbtools-offline-windows-*.zip 到任意目录（如 D:\tmp\new）
-2. 执行 D:\tmp\new\upgrade_offline.bat D:\mcp-dbtools
-   （D:\mcp-dbtools 为旧安装目录；会自动备份 .env/datasources.json、更新代码与依赖、重启服务）
-3. 或把新版离线包直接解压覆盖到旧安装目录，然后运行该目录下的 upgrade_offline.bat
+1. 先停服务：pm2 stop mcp-dbtools
+   （必须：运行中的进程会锁定 .venv 内的 .pyd（jpype 等），导致依赖文件覆盖失败）
+2. 解压新版 mcp-dbtools-offline-windows-*.zip 到任意目录（如 D:\tmp\new）
+3. 执行 D:\tmp\new\upgrade_offline.bat D:\mcp-dbtools
+   （D:\mcp-dbtools 为旧安装目录；会自动备份配置与源码、更新代码与依赖、尝试重启服务）
+4. 或把新版离线包直接解压覆盖到旧安装目录，然后运行该目录下的 upgrade_offline.bat
 ```
 
-> 升级会**保留**你的 `.env`、`config\datasources.json` 和自定义 JDBC 驱动 jar，不会丢失配置。
+> 升级会**保留** `.env`、`config\datasources.json` 和自定义 JDBC 驱动 jar，并把 `source\`（可能含二次开发改动）
+> 备份到 `backup-时间戳\source`。
+> 项目 wheel 使用 `--force-reinstall` 强制重装——**新旧版本号相同时 pip 默认会跳过安装**，导致代码实际没更新；
+> 升级结束会打印「包内 wheel 版本 | 已安装版本」，两者应一致才算成功。
+
+## 二次开发（内网改源码 / 跑测试）
+
+离线包内含**完整源码快照**（`source\`）与开发依赖 wheel（`offline_packages_win\` 里已含 pytest、setuptools 等）：
+
+```bat
+cd /d D:\mcp-dbtools\source
+python -m venv .venv            :: 开发环境独立于生产的 ..\.venv，互不影响
+.venv\Scripts\pip install --no-index --find-links=..\offline_packages_win -e .
+.venv\Scripts\pip install --no-index --find-links=..\offline_packages_win -r requirements-dev.txt
+.venv\Scripts\python -m pytest -q
+```
+
+改动 `source\src\` 下的代码会立即生效（`-e` 可编辑安装）。用源码方式启动服务调试：
+
+```bat
+set MCP_DBTOOLS_DRIVERS_DIR=..\drivers
+set MCP_DBTOOLS_CONFIG=%CD%\config\datasources.json
+.venv\Scripts\python -m mcp_dbtools --transport streamable-http
+```
+
+完整说明见包内 `README-二次开发.md`（= `source\docs\二次开发指南.md`）。
 
 ## 数据源配置（config/datasources.json）
 
@@ -98,13 +125,16 @@ mcp-dbtools-offline-windows-*.zip 解压后:
 ├── requirements.txt
 ├── .env.example               # 环境变量示例（安装时生成 .env）
 ├── README-windows.md          # 本说明
+├── README-二次开发.md          # 内网二次开发指南
 ├── dist/                      # 项目 wheel
-├── offline_packages_win/      # Windows 依赖 wheel（32 个包）
+├── offline_packages_win/      # 依赖 wheel（运行时 + 开发依赖 pytest 等 + setuptools/wheel）
+├── source/                    # 完整源码快照（src/ tests/ scripts/ deploy/ pyproject.toml 等，可二次开发）
 ├── ecosystem-windows.config.cjs   # pm2 配置（Windows 版）
 ├── config/
 │   └── datasources.json.example   # 数据源配置示例（安装时生成 datasources.json）
 ├── scripts/
-│   └── encrypt_password.py    # 密码加密工具
+│   ├── encrypt_password.py    # 密码加密工具
+│   └── sql/                   # SQL 脚本
 ├── drivers/                   # 放 JDBC 驱动 jar（如 db2jcc4.jar）
 └── docs/
 ```

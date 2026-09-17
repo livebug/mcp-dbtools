@@ -63,6 +63,8 @@ echo   4. 启动服务：
 echo      .venv\Scripts\python -m mcp_dbtools --transport streamable-http
 echo      服务地址 http://127.0.0.1:8000/mcp
 echo   5. 升级：解压新版离线包后双击 upgrade_offline.bat
+echo   6. 二次开发：源码在 source\ 目录（开发依赖 wheel 在 offline_packages_win\）
+echo      详见 README-二次开发.md
 echo ============================================================
 endlocal
 pause

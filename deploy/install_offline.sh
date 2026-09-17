@@ -51,6 +51,10 @@ cp -r "$HERE"/scripts/sql "$INSTALL_DIR/scripts/" 2>/dev/null || true
 cp "$HERE"/requirements.txt "$INSTALL_DIR/"
 cp "$HERE"/.env.example "$INSTALL_DIR/"
 cp "$HERE"/ecosystem.config.cjs "$INSTALL_DIR/"
+# 源码快照与文档（内网二次开发用，见 README-二次开发.md）
+cp -r "$HERE"/source "$INSTALL_DIR/" 2>/dev/null || echo "  [WARN] 离线包内缺少 source/（内网无法二次开发）"
+cp -r "$HERE"/docs "$INSTALL_DIR/" 2>/dev/null || true
+cp "$HERE"/README-二次开发.md "$INSTALL_DIR/" 2>/dev/null || true
 
 # ---------- 创建虚拟环境并离线安装 ----------
 cd "$INSTALL_DIR"
@@ -87,3 +91,5 @@ echo "   服务地址 : http://<内网IP>:8000/mcp"
 echo "   健康检查 : curl http://127.0.0.1:8000/health"
 echo "   查看日志 : pm2 logs mcp-dbtools"
 echo "   修改配置 : $INSTALL_DIR/.env 与 $INSTALL_DIR/config/datasources.json 后 pm2 restart mcp-dbtools"
+echo "   二次开发 : 源码在 $INSTALL_DIR/source，开发依赖 wheel 在 $INSTALL_DIR/wheels"
+echo "              详见 $INSTALL_DIR/README-二次开发.md"

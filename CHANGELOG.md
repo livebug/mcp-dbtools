@@ -19,8 +19,20 @@
   `deploy/upgrade_offline.sh`（包内 `upgrade.sh`）与 Windows 升级脚本
   `deploy/windows/upgrade_offline.bat`，升级时自动备份并保留 `.env`、`config/datasources.json`
   与自定义 JDBC 驱动 jar；重写 Windows 安装脚本 `install_offline.bat` 适配离线包结构。
+- **离线包支持内网二次开发**：`scripts/build_offline.sh` 在离线包内新增**完整源码快照 `source/`**
+  （由构建机 `git archive HEAD` 生成，不含 `.git`；有未提交改动时打印 `[WARN]`）与**开发依赖 wheel**
+  （`requirements-dev.txt` + `setuptools`/`wheel`），内网可离线执行 `pip install --no-index -e source`
+  与 `python -m pytest`；新增 `docs/二次开发指南.md`（包内 `README-二次开发.md`）；
+  Linux `install_offline.sh` 与 Linux/Windows 升级脚本同步复制并**备份** `source/`（含二次开发改动）。
 
 ### 修复
+
+- **同版本号离线升级不生效**：内网已安装版本与新离线包版本号相同时，`pip install --upgrade <wheel>`
+  会跳过安装（`already installed with the same version as the provided wheel`），只更新依赖而**代码未更新**，
+  升级脚本却仍提示"升级完成"。`deploy/upgrade_offline.sh` 与 `deploy/windows/upgrade_offline.bat`
+  改为对项目 wheel 使用 `--force-reinstall --no-deps` 强制重装、依赖单独按 `requirements.txt` 升级，
+  并在结尾打印「包内 wheel 版本 | 已安装版本」供核对；Windows 升级脚本新增"服务仍在运行"的停服提醒
+  （运行中的进程会锁定 `.venv` 内 `.pyd` 导致覆盖失败）。
 
 - **DB2 结果集抓取兼容**：`execute_query` / `execute_in_transaction` 对无结果集语句
   （INSERT/DELETE 等）跳过抓取；`fetchmany` 取完最后一行后再抓取抛

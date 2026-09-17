@@ -9,10 +9,10 @@ REM      - 指定旧安装目录: upgrade_offline.bat D:\mcp-dbtools
 REM      - 或把新版离线包解压覆盖到旧安装目录后直接运行 upgrade_offline.bat
 REM
 REM  功能:
-REM    - 备份用户配置（.env、config\datasources.json）到 backup-时间戳\
-REM    - 更新代码与依赖（dist、offline_packages_win、drivers 增量、scripts）
+REM    - 备份用户配置（.env、config\datasources.json）与源码目录（source\）到 backup-时间戳\
+REM    - 更新代码与依赖（dist、offline_packages_win、drivers 增量、scripts、source 源码快照）
 REM    - 保留用户文件：.env、config\datasources.json、自定义 JDBC 驱动 jar
-REM    - 离线升级虚拟环境依赖（--no-index --upgrade）
+REM    - 离线升级虚拟环境依赖（--no-index；项目 wheel 强制重装，避免同版本被 pip 跳过）
 REM ============================================================
 setlocal
 set "PKG_DIR=%~dp0"
@@ -35,6 +35,16 @@ if not exist "%PKG_DIR%dist\*.whl" (
     pause & exit /b 1
 )
 
+REM ---------- 0. 检查服务是否在运行 ----------
+REM Windows 上运行中的进程会锁定 .venv 内的 .pyd（jpype 等），导致 pip 覆盖失败
+pm2 describe mcp-dbtools >nul 2>&1
+if %errorlevel%==0 (
+    echo [警告] 检测到 mcp-dbtools 仍在运行。
+    echo        强烈建议先执行 pm2 stop mcp-dbtools 再继续升级，
+    echo        否则依赖文件可能因被占用而无法覆盖（升级会失败）。
+    pause
+)
+
 REM ---------- 1. 备份用户配置 ----------
 for /f "tokens=1-3 delims=: " %%a in ('time /t') do set "TT=%%a%%b%%c"
 set "TT=%TT: =0%"
@@ -44,6 +54,11 @@ echo 备份用户配置 -^> %BACKUP%
 mkdir "%BACKUP%\config" 2>nul
 if exist "%INSTALL_DIR%\.env" copy /y "%INSTALL_DIR%\.env" "%BACKUP%\" >nul
 if exist "%INSTALL_DIR%\config\datasources.json" copy /y "%INSTALL_DIR%\config\datasources.json" "%BACKUP%\config\" >nul
+REM 源码目录（可能含内网二次开发改动）一并备份，排除开发虚拟环境
+if exist "%INSTALL_DIR%\source" (
+    echo 备份源码目录 -^> %BACKUP%\source
+    robocopy "%INSTALL_DIR%\source" "%BACKUP%\source" /E /XD .venv .pytest_cache >nul
+)
 
 REM ---------- 2. 更新代码与依赖（保留用户文件） ----------
 echo 更新代码与依赖...
@@ -58,6 +73,13 @@ REM 脚本与配置示例
 if not exist "%INSTALL_DIR%\scripts\sql" mkdir "%INSTALL_DIR%\scripts\sql"
 if exist "%PKG_DIR%scripts\sql\*" xcopy /e /i /y "%PKG_DIR%scripts\sql" "%INSTALL_DIR%\scripts\sql" >nul
 if exist "%PKG_DIR%scripts\encrypt_password.py" copy /y "%PKG_DIR%scripts\encrypt_password.py" "%INSTALL_DIR%\scripts\" >nul
+REM 源码快照（内网二次开发）：替换为新版，旧版已备份到 backup\
+if exist "%PKG_DIR%source" (
+    if exist "%INSTALL_DIR%\source" rmdir /s /q "%INSTALL_DIR%\source"
+    xcopy /e /i /y "%PKG_DIR%source" "%INSTALL_DIR%\source" >nul
+    echo   已更新 source 源码快照
+)
+if exist "%PKG_DIR%README-二次开发.md" copy /y "%PKG_DIR%README-二次开发.md" "%INSTALL_DIR%\" >nul
 if not exist "%INSTALL_DIR%\config" mkdir "%INSTALL_DIR%\config"
 copy /y "%PKG_DIR%config\datasources.json.example" "%INSTALL_DIR%\config\datasources.json.example" >nul
 copy /y "%PKG_DIR%requirements.txt" "%INSTALL_DIR%\requirements.txt" >nul
@@ -66,7 +88,14 @@ copy /y "%PKG_DIR%.env.example" "%INSTALL_DIR%\.env.example" >nul
 REM ---------- 3. 离线升级虚拟环境依赖 ----------
 echo 离线升级依赖（--no-index）...
 for %%f in ("%INSTALL_DIR%\dist\*.whl") do set "PROJ_WHEEL=%%f"
-"%INSTALL_DIR%\.venv\Scripts\pip" install --no-index --find-links="%INSTALL_DIR%\offline_packages_win" --upgrade "%PROJ_WHEEL%"
+REM 项目 wheel 必须强制重装：若已装版本与新包版本号相同，pip 会跳过安装导致代码不更新
+"%INSTALL_DIR%\.venv\Scripts\pip" install --no-index --find-links="%INSTALL_DIR%\offline_packages_win" --upgrade --force-reinstall --no-deps "%PROJ_WHEEL%"
+if errorlevel 1 (
+    echo 依赖升级失败，请检查 offline_packages_win 目录完整性
+    pause & exit /b 1
+)
+REM 依赖按 requirements.txt 升级（已满足的包不重复安装）
+"%INSTALL_DIR%\.venv\Scripts\pip" install --no-index --find-links="%INSTALL_DIR%\offline_packages_win" --upgrade -r "%INSTALL_DIR%\requirements.txt"
 if errorlevel 1 (
     echo 依赖升级失败，请检查 offline_packages_win 目录完整性
     pause & exit /b 1

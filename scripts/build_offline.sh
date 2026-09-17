@@ -13,8 +13,10 @@
 #   mcp-dbtools-offline-windows-YYYYMMDD.zip
 #
 # 离线包内容:
-#   项目 wheel + 运行时依赖 wheel + JDBC 驱动 + 配置示例 +
-#   安装脚本(install.sh / install_offline.bat) + 升级脚本(upgrade.sh / upgrade_offline.bat)
+#   项目 wheel + 运行时依赖 wheel + 开发依赖 wheel（pytest/setuptools 等）+
+#   **完整源码快照 source/**（供内网二次开发）+ JDBC 驱动 + 配置示例 +
+#   安装脚本(install.sh / install_offline.bat) + 升级脚本(upgrade.sh / upgrade_offline.bat) +
+#   二次开发指南(README-二次开发.md)
 # =============================================================
 set -euo pipefail
 
@@ -56,6 +58,38 @@ assemble_common() {
   cp -r scripts/sql/. "$PKG/scripts/sql/" 2>/dev/null || true
   cp scripts/encrypt_password.py "$PKG/scripts/encrypt_password.py"
   cp -r docs/. "$PKG/docs/" 2>/dev/null || true
+  # 二次开发指南（同时放在包根方便内网直接看到）
+  cp docs/二次开发指南.md "$PKG/README-二次开发.md"
+
+  # ---------- 完整源码快照（供内网二次开发） ----------
+  echo "==> 组装源码快照 source/（内网二次开发用）"
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "    [WARN] 当前目录不是 git 仓库，跳过 source/ 快照（内网将无法二次开发）"
+  else
+    if [ -n "$(git status --porcelain)" ]; then
+      echo "    [WARN] 工作区存在未提交改动！source/ 快照只包含已提交内容（git HEAD）"
+    fi
+    rm -rf "$PKG/source"
+    mkdir -p "$PKG/source"
+    git archive HEAD | tar x -C "$PKG/source"
+    # 运行期产物不是源码，剔除
+    rm -rf "$PKG/source/exports"
+    echo "    source/ 文件数: $(find "$PKG/source" -type f | wc -l)"
+  fi
+}
+
+# 下载离线 wheel：运行时依赖 + 开发依赖 + 构建后端（setuptools/wheel）
+# 用途：内网 `pip install --no-index -e .` / `pytest` 都能离线完成
+download_wheels() {
+  local DEST="$1" PLATFORM_TAG="$2" PYVER="$3" ABI="$4"
+  local -a plat_args=(--platform "$PLATFORM_TAG" --python-version "$PYVER")
+  if [ -n "$ABI" ]; then
+    plat_args+=(--implementation cp --abi "$ABI")
+  fi
+  mkdir -p "$DEST"
+  "$PY" -m pip download -r requirements.txt -d "$DEST" --only-binary=:all: "${plat_args[@]}"
+  "$PY" -m pip download -r requirements-dev.txt -d "$DEST" --only-binary=:all: "${plat_args[@]}"
+  "$PY" -m pip download setuptools wheel -d "$DEST" --only-binary=:all: "${plat_args[@]}"
 }
 
 # ---------- Linux 包 ----------
@@ -66,8 +100,8 @@ build_linux() {
   rm -rf wheels_linux "$PKG"
   # 锁定 manylinux2014（glibc 2.17+）平台标签，避免拉到 manylinux_2_28/2_34 等
   # 过新 wheel（如新版 cryptography），导致 CentOS 7/8 等内网机无法安装
-  "$PY" -m pip download -r requirements.txt -d wheels_linux/ --only-binary=:all: \
-      --platform "manylinux2014_${ARCH}" --python-version "$PY_VER"
+  # 下载内容：运行时依赖 + 开发依赖 + 构建后端（内网可离线 pip install -e . 与 pytest）
+  download_wheels wheels_linux/ "manylinux2014_${ARCH}" "$PY_VER" ""
 
   echo "==> [3] 组装 Linux 离线包目录"
   assemble_common "$PKG"
@@ -91,9 +125,8 @@ build_windows() {
   local WIN_PY_VER="${WIN_PYTHON_VER:-3.13}"
   echo "==> [2] 下载 Windows 依赖 wheel（win_amd64, Python $WIN_PY_VER）"
   rm -rf wheels_windows "$PKG"
-  "$PY" -m pip download -r requirements.txt -d wheels_windows/ --only-binary=:all: \
-      --platform win_amd64 \
-      --python-version "$WIN_PY_VER" --implementation cp --abi "cp${WIN_PY_VER/./}"
+  # 运行时 + 开发依赖 + 构建后端（内网可离线 pip install -e . 与 pytest）
+  download_wheels wheels_windows/ win_amd64 "$WIN_PY_VER" "cp${WIN_PY_VER/./}"
 
   echo "==> [3] 组装 Windows 离线包目录"
   assemble_common "$PKG"
@@ -124,4 +157,5 @@ echo ""
 echo "完成。离线包已生成，拷贝到内网后解压执行:"
 echo "  Linux  : tar xzf mcp-dbtools-offline-linux-${STAMP}.tar.gz && bash mcp-dbtools-offline-linux/install.sh"
 echo "  Windows: 解压 mcp-dbtools-offline-windows-${STAMP}.zip 后双击 install_offline.bat"
+echo "  二次开发: 源码在包内 source/，见 README-二次开发.md（内网可 pip install -e .）"
 echo "  （构建机与目标机需同为对应平台 + 相同 Python 主版本）"

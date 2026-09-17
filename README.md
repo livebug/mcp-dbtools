@@ -158,6 +158,7 @@ pm2 reload mcp-dbtools        # 重启
 ```
 
 前置：内网机需 JRE/JDK 11+（JPype 1.5+ 不支持 Java 8）与 Node.js/pm2；构建机与内网机需同为 Linux x86_64 且 Python 主版本一致。
+离线包内含**完整源码快照 `source/`** 与开发依赖 wheel，内网可直接 `pip install --no-index -e source` 做二次开发（见 `docs/二次开发指南.md`）。
 详细说明见 [docs/使用说明.md](docs/使用说明.md) 第 2 章。
 
 ### systemd 部署
@@ -417,9 +418,9 @@ systemctl enable --now mcp-dbtools
 #### ① 在【外网构建机】生成离线包
 
 ```bash
-bash scripts/build_offline.sh
-# 产物: mcp-dbtools-offline-YYYYMMDD.tar.gz
-# 内含: 项目 wheel + 全部运行时依赖 wheel + JDBC 驱动 + pm2 配置 + 安装脚本
+bash scripts/build_offline.sh --platform linux
+# 产物: mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
+# 内含: 项目 wheel + 运行时/开发依赖 wheel + 完整源码快照 source/ + JDBC 驱动 + pm2 配置 + 安装/升级脚本
 ```
 
 > 构建机与内网机需**同为 Linux x86_64 + 相同 Python 主版本**（依赖含 manylinux 二进制 wheel，如 `jpype1`/`pydantic-core`）。
@@ -431,8 +432,8 @@ bash scripts/build_offline.sh
 
 ```bash
 # 上传离线包后
-tar xzf mcp-dbtools-offline-YYYYMMDD.tar.gz
-bash mcp-dbtools-offline/install.sh            # 默认安装到 /opt/mcp-dbtools
+tar xzf mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
+bash mcp-dbtools-offline-linux/install.sh      # 默认安装到 /opt/mcp-dbtools
 # 安装脚本会自动: 建 venv -> --no-index 离线安装 -> 生成 .env -> pm2 启动
 ```
 
@@ -444,6 +445,15 @@ vim /opt/mcp-dbtools/config/datasources.json         # 数据源 JDBC URL（内�
 pm2 restart mcp-dbtools
 curl http://127.0.0.1:8000/health
 ```
+
+#### ④ 升级已有安装
+
+```bash
+tar xzf mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
+bash mcp-dbtools-offline-linux/upgrade.sh /opt/mcp-dbtools
+# 自动备份 .env / datasources.json / source（含二次开发改动）-> 强制重装项目 wheel -> 重启服务
+```
+Windows：解压新版 zip 后先 `pm2 stop mcp-dbtools`，再执行 `upgrade_offline.bat D:\mcp-dbtools`。
 
 #### pm2 常用命令
 
