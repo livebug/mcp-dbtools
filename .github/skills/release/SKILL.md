@@ -71,6 +71,17 @@ git push origin main --tags
 > GitHub 另会**自动附带 Source code (zip/tar.gz)** 纯源码包（约 0.4 MB），供内网只取源码时使用。
 > **版本号写错会导致 CI 在「校验 tag 与版本号一致」这步直接失败**，Release 不会发布，必须先改版本号再重打 tag。
 
+### 7. 验证 CI 与 Release
+```bash
+gh run list --limit 3          # 看 Release 工作流是否在跑
+gh run watch <run-id>          # 跟踪日志
+gh release view v1.1.0         # 确认附件：wheel + 两个离线包 + SHA256SUMS.txt
+```
+> **坑：仓库里第一次新增 workflow 时，与 tag 同一次 push 可能不触发**（GitHub 注册 workflow 与
+> push 事件存在竞态，事件匹配不到任何 workflow 被静默忽略）。补救：
+> `gh workflow run Release --ref v1.1.0`（带 tag ref 手动派发，仍会正常发 Release）；
+> 之后的 tag 推送都能自动触发。
+
 ## 输出
 - 提交 hash + tag 名（如 `v1.1.0`）
 - 离线包：`mcp-dbtools-offline-YYYYMMDD.tar.gz`
