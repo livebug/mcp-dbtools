@@ -35,6 +35,18 @@
       "jars": [
         "db2jcc4.jar"
       ]
+    },
+    {
+      "name": "mysql_test",
+      "type": "mysql",
+      "description": "MySQL 示例（驱动 mysql-connector-j 需手动放入 drivers/；URL 需带 characterEncoding=UTF-8 以正确读取中文）",
+      "driver_class": "com.mysql.cj.jdbc.Driver",
+      "jdbc_url": "jdbc:mysql://127.0.0.1:3306/testdb?useUnicode=true&characterEncoding=UTF-8",
+      "username": "mysql",
+      "password": "{ENV:MYSQL_PASSWORD}",
+      "jars": [
+        "mysql-connector-j-8.4.0.jar"
+      ]
     }
   ]
 }

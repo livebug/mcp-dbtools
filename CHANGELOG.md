@@ -3,7 +3,7 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.1.0] - 2026-09-17
 
 ### 新增
 
@@ -46,6 +46,9 @@
   `MCP_DBTOOLS_SECRET_KEY`；README 版本号更正为 v1.0.3、补充 DB2/MySQL 数据源与架构图；
   AGENTS.md 数据源列表与工具数（19 个）更正；使用说明环境变量表补充数据源密码变量、
   架构图与驱动下载说明。
+- **配置示例补全**：`config/datasources.json.example` 补充 `mysql_test` 示例（原先仅
+  `config/datasources.json` 内含 MySQL 配置，而离线包只分发 `.example`，导致内网拿不到
+  MySQL 数据源示例）；README 与使用说明版本标识更新为 v1.1.0。
 
 ## [1.0.3] - 2026-08-10
 

@@ -65,7 +65,8 @@ pm2 stop mcp-dbtools                     # 停止
 ## 关键坑（务必遵守）
 - **`deploy/ecosystem.config.cjs` 是 JS 文件，注释必须用 `//`**，不能有 `#`（node require 会语法报错）。
 - 离线包内 `dist/` 必须放子目录，install 脚本引用 `dist/*.whl`。
-- **同版本 wheel 会被 pip 静默跳过**：内网已装 1.0.3 时，`pip install --upgrade dist/mcp_dbtools-1.0.3-*.whl`
+- **同版本 wheel 会被 pip 静默跳过**：内网已安装版本与新包版本号相同时
+  （例如都是 `1.1.0`），`pip install --upgrade dist/mcp_dbtools-1.1.0-*.whl`
   只提示 `already installed with the same version as the provided wheel`，**代码不会更新但脚本仍报"升级完成"**。
   升级脚本已用 `--force-reinstall --no-deps` 修掉（依赖另用 `-r requirements.txt` 升级）；
   同时**打包前应 bump 版本号**，否则内网无法用 `__version__` 判断新旧。
