@@ -13,6 +13,10 @@ user-invocable: true
 - 内网服务器无法访问外网、无法使用 Docker 时
 - 需要生成可分发/可存档的部署包时
 
+> 常规发布**不用手工构建**：推送 `v*` tag 后 `.github/workflows/release.yml` 会自动跑测试、
+> 校验版本号、构建 Linux/Windows 两个离线包并发布到 GitHub Release。
+> 下面流程用于本地验证、紧急构建或 CI 不可用时。
+
 ## 前提
 - 构建机（外网）与内网机均为 **Linux x86_64**，Python **主版本一致**（jpype1/pydantic-core 是 manylinux 二进制 wheel）
 - 内网机需已装 **JRE/JDK 8+**（JPype 需要）与 **Node.js/pm2**

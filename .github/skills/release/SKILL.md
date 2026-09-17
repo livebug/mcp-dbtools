@@ -51,10 +51,11 @@ mcp-dbtools 遵循 Semantic Versioning。当前版本见 `CHANGELOG.md` 与 `pyp
 
 ### 5. 重新构建离线部署包
 ```bash
-bash scripts/build_offline.sh
-# 产物 mcp-dbtools-offline-YYYYMMDD.tar.gz（wheel 含新版本号）
+bash scripts/build_offline.sh --platform all
+# 产物 mcp-dbtools-offline-{linux-*.tar.gz,windows-*.zip}（wheel 含新版本号 + source/ 源码快照）
 ```
-> 注意：`dist/`、`wheels/`、`offline/`、`*.tar.gz` 已被 .gitignore 忽略，不会进 git。
+> 注意：`dist/`、`wheels*/`、`offline/`、`*.tar.gz`、`*.zip` 已被 .gitignore 忽略，不会进 git。
+> **CI 会自动做这一步**（见第 6 步），本地构建仅用于内网紧急发布或不想等 CI 时。
 
 ### 6. 提交并打 tag
 ```bash
@@ -63,6 +64,12 @@ git commit -m "release: v1.1.0 <一句话描述>"
 git tag -a v1.1.0 -m "mcp-dbtools v1.1.0"
 git push origin main --tags
 ```
+
+> 推送 tag 后 **GitHub Actions（`.github/workflows/release.yml`）自动构建并发布 Release**：
+> 跑测试 → 校验 tag 与 `pyproject.toml`/`__init__.py` 版本号一致 → 构建两个离线包 →
+> 生成 `SHA256SUMS.txt` → 创建 Release 附件（项目 wheel + Linux/Windows 离线包）。
+> GitHub 另会**自动附带 Source code (zip/tar.gz)** 纯源码包（约 0.4 MB），供内网只取源码时使用。
+> **版本号写错会导致 CI 在「校验 tag 与版本号一致」这步直接失败**，Release 不会发布，必须先改版本号再重打 tag。
 
 ## 输出
 - 提交 hash + tag 名（如 `v1.1.0`）

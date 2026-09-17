@@ -24,6 +24,10 @@
   （`requirements-dev.txt` + `setuptools`/`wheel`），内网可离线执行 `pip install --no-index -e source`
   与 `python -m pytest`；新增 `docs/二次开发指南.md`（包内 `README-二次开发.md`）；
   Linux `install_offline.sh` 与 Linux/Windows 升级脚本同步复制并**备份** `source/`（含二次开发改动）。
+- **GitHub Actions 自动发布**：新增 `.github/workflows/release.yml`，推送 `v*` tag 时自动
+  跑测试、校验 tag 与 `pyproject.toml` / `__init__.py` 版本号一致（不一致则中断）、构建
+  Linux/Windows 离线包、生成 `SHA256SUMS.txt`，并创建 GitHub Release 附上项目 wheel 与两个
+  离线包；支持手动触发（仅上传 Artifacts，不发 Release）。
 
 ### 修复
 

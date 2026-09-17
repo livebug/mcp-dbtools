@@ -455,6 +455,16 @@ bash mcp-dbtools-offline-linux/upgrade.sh /opt/mcp-dbtools
 ```
 Windows：解压新版 zip 后先 `pm2 stop mcp-dbtools`，再执行 `upgrade_offline.bat D:\mcp-dbtools`。
 
+#### ⑤ GitHub Actions 自动构建（可选）
+
+推送 `v*` tag 时，`.github/workflows/release.yml` 自动执行：跑测试 → 校验 tag 与版本号一致 →
+构建 Linux/Windows 离线包 → 生成 `SHA256SUMS.txt` → 创建 GitHub Release 并附上
+项目 wheel 与两个离线包。也可在 Actions 页手动触发（仅上传 Artifacts，不发 Release）。
+
+> GitHub Release 还会**自动附带 Source code (zip / tar.gz)** —— 纯源码包约 **0.4 MB**
+> （完整离线包 11 MB，其中 95% 是依赖 wheel）。内网机器不能访问 GitHub，产物仍需人工转运；
+> 若内网**只取源码**做二次开发，搬 0.4 MB 的源码包即可，依赖 wheel 等需要离线安装时再取。
+
 #### pm2 常用命令
 
 ```bash

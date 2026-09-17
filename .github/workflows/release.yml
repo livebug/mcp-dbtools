@@ -1,0 +1,89 @@
+# =============================================================
+# 打 tag 自动构建并发布 Release
+#
+# 触发：
+#   - push tag（v*）      → 构建离线包 + 发布 GitHub Release
+#   - 手动 workflow_dispatch → 仅构建并上传 Artifacts（不发 Release）
+#
+# Release 附件：
+#   - mcp_dbtools-<ver>-py3-none-any.whl          项目 wheel（纯 Python，几十 KB）
+#   - mcp-dbtools-offline-linux-YYYYMMDD.tar.gz   内网离线包（含源码快照 + 依赖 wheel）
+#   - mcp-dbtools-offline-windows-YYYYMMDD.zip    内网离线包（含源码快照 + 依赖 wheel）
+#   - SHA256SUMS.txt                              校验和
+#   GitHub 还会自动附带 Source code (zip / tar.gz)，即纯源码包（约几百 KB），
+#   供内网只取源码做二次开发时使用。
+# =============================================================
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: 校验 tag 与版本号一致
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          PYVER="$(grep -m1 '^version = ' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          INITVER="$(grep -m1 '__version__' src/mcp_dbtools/__init__.py | sed -E 's/.*"([^"]+)".*/\1/')"
+          echo "tag=$TAG | pyproject=$PYVER | __init__=$INITVER"
+          if [ "$TAG" != "$PYVER" ] || [ "$TAG" != "$INITVER" ]; then
+            echo "::error::tag 与 pyproject.toml / __init__.py 中的版本号不一致"
+            exit 1
+          fi
+
+      - name: 安装依赖（含开发依赖）
+        run: pip install -e ".[dev]"
+
+      - name: 运行测试
+        run: python -m pytest -q
+
+      - name: 构建离线包（Linux + Windows）
+        run: bash scripts/build_offline.sh --platform all
+
+      - name: 生成 SHA256 校验和
+        run: |
+          sha256sum dist/*.whl mcp-dbtools-offline-*.tar.gz mcp-dbtools-offline-*.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: 上传构建产物（Actions Artifacts）
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-dbtools-offline-${{ github.ref_name }}
+          path: |
+            dist/*.whl
+            mcp-dbtools-offline-*.tar.gz
+            mcp-dbtools-offline-*.zip
+            SHA256SUMS.txt
+          retention-days: 90
+
+      - name: 发布 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            mcp-dbtools-offline-linux-*.tar.gz
+            mcp-dbtools-offline-windows-*.zip
+            SHA256SUMS.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
