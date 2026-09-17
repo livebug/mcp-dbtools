@@ -35,6 +35,19 @@ if not exist "%PKG_DIR%dist\*.whl" (
     pause & exit /b 1
 )
 
+REM 旧 venv 的 Python 版本必须与离线包一致（依赖为 cp3xx 二进制 wheel，不跨版本）
+set "REQ_PY=3.13"
+if exist "%PKG_DIR%python-version-required.txt" set /p REQ_PY=<"%PKG_DIR%python-version-required.txt"
+set "REQ_PY=%REQ_PY: =%"
+"%INSTALL_DIR%\.venv\Scripts\python" -c "import sys; raise SystemExit(0 if '.'.join(map(str,sys.version_info[:2]))=='%REQ_PY%' else 1)"
+if errorlevel 1 (
+    echo 错误：旧安装环境的 Python 版本与离线包不匹配（离线包需要 Python %REQ_PY%.x）
+    echo       包内 wheel 为 cp%REQ_PY:.=% win_amd64，不能跨版本升级。
+    echo       处理办法：先安装 Python %REQ_PY%.x（本包可能附带 python-*-amd64.exe 安装器），
+    echo                 删除 %INSTALL_DIR%\.venv 后用 install_offline.bat 重新安装（配置会保留）
+    pause & exit /b 1
+)
+
 REM ---------- 0. 检查服务是否在运行 ----------
 REM Windows 上运行中的进程会锁定 .venv 内的 .pyd（jpype 等），导致 pip 覆盖失败
 pm2 describe mcp-dbtools >nul 2>&1

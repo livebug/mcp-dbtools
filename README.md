@@ -157,7 +157,9 @@ pm2 logs mcp-dbtools          # 日志
 pm2 reload mcp-dbtools        # 重启
 ```
 
-前置：内网机需 JRE/JDK 11+（JPype 1.5+ 不支持 Java 8）与 Node.js/pm2；构建机与内网机需同为 Linux x86_64 且 Python 主版本一致。
+前置：内网机需 JRE/JDK 11+（JPype 1.5+ 不支持 Java 8）与 Node.js/pm2；Python 版本必须与离线包一致
+（包内 `python-version-required.txt`，Windows 为 3.13 64 位）——依赖含 `cp3xx` 二进制 wheel，**不能跨版本**。
+**Python 3.8 无法运行**（`mcp` SDK 要求 `>=3.10`）：Windows 包内附带 CPython 官方安装器，可在低版本机器上并行安装 3.13。
 离线包内含**完整源码快照 `source/`** 与开发依赖 wheel，内网可直接 `pip install --no-index -e source` 做二次开发（见 `docs/二次开发指南.md`）。
 详细说明见 [docs/使用说明.md](docs/使用说明.md) 第 2 章。
 
@@ -421,6 +423,8 @@ systemctl enable --now mcp-dbtools
 bash scripts/build_offline.sh --platform linux
 # 产物: mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
 # 内含: 项目 wheel + 运行时/开发依赖 wheel + 完整源码快照 source/ + JDBC 驱动 + pm2 配置 + 安装/升级脚本
+# Windows 包默认附带 CPython 官方安装器（--no-python 可关闭，省约 29 MB）：
+#   bash scripts/build_offline.sh --platform windows
 ```
 
 > 构建机与内网机需**同为 Linux x86_64 + 相同 Python 主版本**（依赖含 manylinux 二进制 wheel，如 `jpype1`/`pydantic-core`）。

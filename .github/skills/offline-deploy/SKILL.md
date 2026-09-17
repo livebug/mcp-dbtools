@@ -18,14 +18,18 @@ user-invocable: true
 > 下面流程用于本地验证、紧急构建或 CI 不可用时。
 
 ## 前提
-- 构建机（外网）与内网机均为 **Linux x86_64**，Python **主版本一致**（jpype1/pydantic-core 是 manylinux 二进制 wheel）
-- 内网机需已装 **JRE/JDK 8+**（JPype 需要）与 **Node.js/pm2**
+- 构建机（外网）与内网机均为 **Linux x86_64**（或 Windows 目标机），Python **版本必须与包内
+  `python-version-required.txt` 一致**（jpype1/pydantic-core 是 cp3xx 二进制 wheel，不跨版本）
+- **Python 3.8/3.9 不可用**：`mcp` SDK 全版本要求 `>=3.10`（`pip download` 直接报
+  `No matching distribution found for mcp`）。Windows 包会附带 CPython 官方安装器供低版本机并行安装
+- 内网机需已装 **JRE/JDK 11+**（JPype 需要）与 **Node.js/pm2**
 
 ## 流程
 
 ### 1. 外网构建机：生成离线包
 ```bash
 bash scripts/build_offline.sh --platform linux     # 或 windows / all
+bash scripts/build_offline.sh --platform windows --no-python   # 不附带 Python 安装器（省 ~29MB）
 # 产物: mcp-dbtools-offline-linux-YYYYMMDD.tar.gz / mcp-dbtools-offline-windows-YYYYMMDD.zip
 ```
 
@@ -34,6 +38,9 @@ bash scripts/build_offline.sh --platform linux     # 或 windows / all
 - `pip download -r requirements.txt` + `-r requirements-dev.txt` + `setuptools wheel`（`--only-binary`，锁定平台标签）
   → 运行时依赖 + **开发依赖**（pytest 等）+ **构建后端**（内网可离线 `pip install -e .`）
 - `git archive HEAD` → **完整源码快照 `source/`**（供内网二次开发；不含 `.git`，构建时有未提交改动会 `[WARN]`）
+- 写 `python-version-required.txt`（目标机 Python 版本要求，安装/升级脚本据此校验并快速失败）
+- Windows 包（默认 `--with-python`）下载 **CPython 官方安装器**放进包内，供 `Python <3.10` 的内网机
+  离线并行安装（`WIN_PY_FULL_VER=3.13.x` 可指定补丁版本；构建机连不上 python.org 时自动跳过）
 - 组装：`dist/` + `wheels/` + `drivers/` + `config/` + `scripts/sql` + `scripts/encrypt_password.py`
   + `docs/` + `README-二次开发.md` + pm2 配置 + `install.sh` / `upgrade.sh`
 
@@ -67,6 +74,9 @@ pm2 stop mcp-dbtools                     # 停止
 ```
 
 ## 关键坑（务必遵守）
+- **Python 版本必须与包一致，且 3.8/3.9 完全不可用**：`mcp` SDK 全版本要求 `>=3.10`，
+  `pip download --python-version 3.8` 直接失败；包内 wheel 是 cp3xx 标签，装到别的版本会
+  报 `No matching distribution found`。构建/安装脚本用 `python-version-required.txt` 做前置校验。
 - **`deploy/ecosystem.config.cjs` 是 JS 文件，注释必须用 `//`**，不能有 `#`（node require 会语法报错）。
 - 离线包内 `dist/` 必须放子目录，install 脚本引用 `dist/*.whl`。
 - **同版本 wheel 会被 pip 静默跳过**：内网已安装版本与新包版本号相同时

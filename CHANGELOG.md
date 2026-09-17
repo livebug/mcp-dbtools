@@ -28,8 +28,20 @@
   跑测试、校验 tag 与 `pyproject.toml` / `__init__.py` 版本号一致（不一致则中断）、构建
   Linux/Windows 离线包、生成 `SHA256SUMS.txt`，并创建 GitHub Release 附上项目 wheel 与两个
   离线包；支持手动触发（仅上传 Artifacts，不发 Release）。
+- **低版本 Python 内网机的部署支持**：离线包新增 `python-version-required.txt`（记录目标机
+  要求的 Python 版本），`install.sh` / `install_offline.bat` / 两个升级脚本据此**前置校验并快速
+  失败**（提示"包内 wheel 为 cp3xx 标签，不能跨版本"），而不是装到一半报错；Windows 包默认
+  附带 **CPython 官方安装器**（`python-3.13.x-amd64.exe`，`--with-python` 默认开启、`--no-python`
+  可关闭），供 `Python <3.10` 的内网机离线**并行安装** 3.13（`install_offline.bat` 检测到版本
+  不符时提示并可代跑安装器）。
 
 ### 修复
+
+- **`cryptography` 未显式声明**：`crypto.py` 直接使用 `cryptography`，但此前只在
+  `requirements.txt` 中，`pyproject.toml` 的 `dependencies` 缺失，实际依赖
+  `mcp -> pyjwt[crypto]` 传递引入；按 wheel 声明安装的离线场景下，上游一旦移除该传递依赖，
+  `{ENC:...}` 密码解密即失效。现已在 `pyproject.toml` 显式声明 `cryptography>=42.0.0`，
+  并新增 `tests/test_packaging.py` 防回归。
 
 - **同版本号离线升级不生效**：内网已安装版本与新离线包版本号相同时，`pip install --upgrade <wheel>`
   会跳过安装（`already installed with the same version as the provided wheel`），只更新依赖而**代码未更新**，

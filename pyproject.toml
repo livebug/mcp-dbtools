@@ -17,6 +17,7 @@ dependencies = [
     "starlette>=0.37.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.7.0",
+    "cryptography>=42.0.0",  # crypto.py 直接使用；不能只靠 mcp -> pyjwt[crypto] 传递依赖
 ]
 
 [project.optional-dependencies]

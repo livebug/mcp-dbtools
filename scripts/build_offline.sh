@@ -3,10 +3,14 @@
 # 生成内网离线部署包（在【外网/可联网】构建机上运行）
 #
 # 用法:
-#   bash scripts/build_offline.sh [--platform linux|windows|all]
+#   bash scripts/build_offline.sh [--platform linux|windows|all] [--with-python|--no-python]
 #     --platform linux    生成 Linux 离线包（默认，tar.gz，manylinux wheel）
 #     --platform windows  生成 Windows 离线包（zip，win_amd64 wheel）
 #     --platform all      同时生成 Linux + Windows 两个包
+#     --with-python       Windows 包内附带 CPython 官方安装器（默认开启）
+#                         内网存在低于目标版本的 Python（如系统自带 3.8）时，
+#                         可在内网离线安装 3.13（并行安装，不影响系统 Python）
+#     --no-python         不附带 Python 安装器（包体积减小约 29 MB）
 #
 # 产物（项目根目录下）:
 #   mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
@@ -29,10 +33,18 @@ PY_VER="$("$PY" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_in
 ARCH="$(uname -m)"
 
 # 兼容旧用法: build_offline.sh [linux|windows|all]
-PLATFORM="${1:-linux}"
-if [ "$PLATFORM" = "--platform" ]; then
-  PLATFORM="${2:-all}"
-fi
+PLATFORM="linux"
+WITH_PYTHON="${WITH_PYTHON_INSTALLER:-1}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --platform) PLATFORM="${2:-}"; shift 2 ;;
+    linux|windows|all) PLATFORM="$1"; shift ;;
+    --with-python) WITH_PYTHON=1; shift ;;
+    --no-python)   WITH_PYTHON=0; shift ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    *) echo "未知参数: $1"; echo "用法: $0 [--platform linux|windows|all] [--with-python|--no-python]"; exit 1 ;;
+  esac
+done
 case "$PLATFORM" in
   linux|windows|all) ;;
   *) echo "用法: $0 [--platform linux|windows|all]"; exit 1 ;;
@@ -92,6 +104,31 @@ download_wheels() {
   "$PY" -m pip download setuptools wheel -d "$DEST" --only-binary=:all: "${plat_args[@]}"
 }
 
+# 下载 Windows 版 CPython 官方安装器放进离线包（供内网低版本机器离线安装）
+# 依赖构建机能访问 python.org；失败仅告警不中断构建
+fetch_python_installer() {
+  local PKG="$1" PYVER="$2"
+  local FULLVER="${WIN_PY_FULL_VER:-}"
+  if [ -z "$FULLVER" ]; then
+    FULLVER="$(curl -s --max-time 20 https://www.python.org/ftp/python/ \
+        | grep -oE "${PYVER//./\\.}\.[0-9]+" | sort -V -u | tail -1 || true)"
+  fi
+  if [ -z "$FULLVER" ]; then
+    echo "    [WARN] 无法确定 Python ${PYVER} 最新补丁号，跳过安装器"
+    echo "           （可显式指定: WIN_PY_FULL_VER=${PYVER}.x bash $0 --platform windows）"
+    return 0
+  fi
+  local URL="https://www.python.org/ftp/python/${FULLVER}/python-${FULLVER}-amd64.exe"
+  local OUT="$PKG/python-${FULLVER}-amd64.exe"
+  echo "==> 下载 CPython 安装器（内网 Python 版本过低的机器用）"
+  if curl -fsSL --max-time 600 -o "$OUT" "$URL"; then
+    echo "    python-${FULLVER}-amd64.exe $(du -h "$OUT" | cut -f1)"
+  else
+    echo "    [WARN] 下载失败（构建机能否访问 python.org?），跳过安装器: $URL"
+    rm -f "$OUT"
+  fi
+}
+
 # ---------- Linux 包 ----------
 build_linux() {
   local PKG="offline/mcp-dbtools-offline-linux"
@@ -105,6 +142,8 @@ build_linux() {
 
   echo "==> [3] 组装 Linux 离线包目录"
   assemble_common "$PKG"
+  # 目标机 Python 版本要求（install 脚本据此校验，版本不符直接报错而非安装失败）
+  echo "$PY_VER" > "$PKG/python-version-required.txt"
   mkdir -p "$PKG/wheels"
   cp wheels_linux/*.whl "$PKG/wheels/"
   cp deploy/ecosystem.config.cjs "$PKG/ecosystem.config.cjs"
@@ -136,6 +175,14 @@ build_windows() {
   cp deploy/windows/install_offline.bat "$PKG/install_offline.bat"
   cp deploy/windows/upgrade_offline.bat "$PKG/upgrade_offline.bat"
   cp deploy/windows/README-windows.md "$PKG/README-windows.md"
+  # 目标机 Python 版本要求（install/upgrade 脚本据此校验）
+  echo "$WIN_PY_VER" > "$PKG/python-version-required.txt"
+  rm -f "$PKG"/python-*-amd64.exe
+  if [ "$WITH_PYTHON" = "1" ]; then
+    fetch_python_installer "$PKG" "$WIN_PY_VER"
+  else
+    echo "    [跳过] 未附带 CPython 安装器（--with-python 可开启）"
+  fi
 
   echo "==> [4] 打包 zip"
   "$PY" - "$ZIP" "$PKG" <<'PYEOF'

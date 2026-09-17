@@ -6,9 +6,33 @@
 
 | 组件 | 要求 |
 | --- | --- |
-| Python | **3.13（64 位）**，与离线包对应；安装时勾选 "Add to PATH" |
+| Python | **3.13（64 位）**，必须与离线包一致（包内依赖为 `cp313 win_amd64` 二进制 wheel，**不能跨版本**）；安装时勾选 "Add to PATH" |
 | JDK | **JDK 11+**（JPype 需要 JVM，推荐 17/21）。`java -version` 验证 |
-| 防火墙 | 放行 8000 端口（远程客户端访问时） |
+| 防火墙 | 放行 8000 端口（远程客户端连接时） |
+
+> 包内 `python-version-required.txt` 记录要求的 Python 版本，`install_offline.bat` / `upgrade_offline.bat`
+> 会据此校验，版本不符会**直接报错**（而不是装到一半失败）。
+
+### 机器上只有 Python 3.8（或其它版本）怎么办？
+
+本项目依赖 **`mcp` SDK（全部版本均要求 Python >= 3.10）**，`pyproject.toml` 也声明
+`requires-python = ">=3.10"`，因此 **Python 3.8 环境无法安装、也无法运行**
+（`pip` 连依赖都解析不出来：`No matching distribution found for mcp`）。
+
+处理办法是**在目标机上并行安装 Python 3.13**（不影响系统自带的 3.8）：
+
+```
+1. 离线包内已附带 CPython 官方安装器（python-3.13.x-amd64.exe；构建时 --with-python，默认开启）
+2. 静默并行安装（不修改系统 Python）：
+   python-3.13.x-amd64.exe /quiet InstallAllUsers=0 PrependPath=1 Include_test=0
+3. 重新打开命令行窗口让 PATH 生效，再运行 install_offline.bat
+```
+
+也可以直接运行 `install_offline.bat`：检测到 Python 缺失或版本不符时，脚本会**提示并可代跑**
+包内安装器（交互确认后执行）。
+
+> Linux 内网机若为 Python 3.8，离线包无法代为升级，需自行准备 Python 3.13
+> （系统包管理器、源码编译或 conda），再执行 `install.sh`。
 
 ## 部署步骤
 
@@ -124,6 +148,8 @@ mcp-dbtools-offline-windows-*.zip 解压后:
 ├── upgrade_offline.bat        # 离线升级（保留用户配置，重启服务）
 ├── requirements.txt
 ├── .env.example               # 环境变量示例（安装时生成 .env）
+├── python-version-required.txt    # 要求的 Python 版本（安装/升级脚本据此校验）
+├── python-3.13.x-amd64.exe    # CPython 官方安装器（--with-python 时附带，供低版本机器离线安装）
 ├── README-windows.md          # 本说明
 ├── README-二次开发.md          # 内网二次开发指南
 ├── dist/                      # 项目 wheel
@@ -148,11 +174,16 @@ mcp-dbtools-offline-windows-*.zip 解压后:
 ## 重新生成 Windows 离线包（联网机器上执行）
 
 ```bash
-# 一键生成 Windows 离线包（zip，win_amd64 + Python 3.13 wheel）
+# 一键生成 Windows 离线包（zip，win_amd64 + Python 3.13 wheel，含 Python 安装器）
 bash scripts/build_offline.sh --platform windows
+
+# 不带 Python 安装器（包体积小约 29 MB）
+bash scripts/build_offline.sh --platform windows --no-python
 
 # 或同时生成 Linux + Windows 两个包
 bash scripts/build_offline.sh --platform all
 ```
 
-> 换 Python 版本时用环境变量指定，如 `WIN_PYTHON_VER=3.12 bash scripts/build_offline.sh --platform windows`。
+> 换 Python 版本时用环境变量指定，如 `WIN_PYTHON_VER=3.12 bash scripts/build_offline.sh --platform windows`
+> （此时包内 wheel 与 `python-version-required.txt` 都会变成 3.12）。
+> 指定安装器补丁版本用 `WIN_PY_FULL_VER=3.13.15`；构建机无法访问 python.org 时安装器会自动跳过。

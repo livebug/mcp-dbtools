@@ -29,6 +29,16 @@ if [ ! -f "$INSTALL_DIR/.venv/bin/python" ]; then
   echo "[ERROR] 未找到 $INSTALL_DIR/.venv/bin/python，请确认旧版本已安装（先跑 install.sh）"
   exit 1
 fi
+# 旧 venv 的 Python 版本必须与离线包一致（依赖含 cp3xx 二进制 wheel，不跨版本）
+REQ_PY="$(cat "$HERE/python-version-required.txt" 2>/dev/null | tr -d '[:space:]')"
+REQ_PY="${REQ_PY:-3.13}"
+if ! "$INSTALL_DIR/.venv/bin/python" -c "import sys; raise SystemExit(0 if '.'.join(map(str,sys.version_info[:2]))=='${REQ_PY}' else 1)"; then
+  echo "[ERROR] 旧安装环境的 Python 版本与离线包不匹配（离线包需要 Python ${REQ_PY}.x）"
+  echo "        包内 wheel 为 cp${REQ_PY/./} 标签，不能跨版本升级。"
+  echo "        处理办法：安装 Python ${REQ_PY} 后删除 $INSTALL_DIR/.venv，"
+  echo "                  再用本包 install.sh 重新安装（.env 与 datasources.json 会保留）"
+  exit 1
+fi
 if [ ! -f "$HERE/dist/"*.whl ]; then
   echo "[ERROR] 离线包缺少项目 wheel（dist/），请确认解压完整"
   exit 1

@@ -18,6 +18,21 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 echo "==> 安装目录: $INSTALL_DIR"
 
 # ---------- 前置检查 ----------
+# Python 版本必须与离线包构建时的版本一致：依赖含 cp3xx 二进制 wheel，不跨版本
+REQ_PY="$(cat "$HERE/python-version-required.txt" 2>/dev/null | tr -d '[:space:]')"
+REQ_PY="${REQ_PY:-3.13}"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "[ERROR] 未检测到 python3。本离线包需要 Python ${REQ_PY}.x（64 位）"
+  exit 1
+fi
+if ! python3 -c "import sys; raise SystemExit(0 if '.'.join(map(str,sys.version_info[:2]))=='${REQ_PY}' else 1)"; then
+  echo "[ERROR] 当前 python3 版本为 $(python3 -V 2>&1 | awk '{print $2}')，本离线包需要 Python ${REQ_PY}.x"
+  echo "        包内依赖 wheel 为 cp${REQ_PY/./} 平台标签，不能跨 Python 版本使用。"
+  echo "        请安装 Python ${REQ_PY}（或改用与该 Python 版本匹配的离线包）后重新执行本脚本。"
+  exit 1
+fi
+python3 -V
+
 if ! command -v java >/dev/null 2>&1; then
   echo "[ERROR] 未检测到 Java 运行时（JRE/JDK 11+），JPype/jaydebeapi 需要 JVM。请先安装:"
   echo "  CentOS/RHEL : sudo yum install -y java-17-openjdk-headless"
