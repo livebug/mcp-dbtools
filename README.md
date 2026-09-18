@@ -1,6 +1,6 @@
 # mcp-dbtools
 
-> **v1.2.0** · 生产可用稳定版 · [更新日志](CHANGELOG.md)
+> **v1.2.1** · 生产可用稳定版 · [更新日志](CHANGELOG.md)
 
 基于 **Python + JDBC** 的数据库 MCP（Model Context Protocol）服务，用于通过 LLM 客户端查询数据库。
 
