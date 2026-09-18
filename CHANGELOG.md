@@ -3,6 +3,37 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-09-18
+
+### 新增
+
+- **Windows 裸机自包含部署（`--self-contained`）**：构建时在包内**展开**便携运行时——
+  便携 CPython（`runtime\python`，含 pip/venv、自带 vcruntime140_1.dll，**免安装、免管理员、
+  不写 PATH/注册表**）与 Eclipse Temurin JRE 17（`runtime\jre`）；目标机**无需预装
+  Python / JDK / Node**，解压后直接运行 `install_offline.bat` 即可。安装脚本
+  **优先用系统运行时，缺失或版本不符（如系统 Python 3.8、Java 8）才回退包内运行时**，
+  因此同一个包在两类机器上都能用，且不会动目标机已有的 Python。
+  便携 Python 选用 python-build-standalone 的 `install_only_stripped`（21 MB，非 stripped 版 45 MB）；
+  包内 `runtime/runtime-manifest.txt` 记录两个运行时的版本来源。
+- **Windows 服务托管不再强制 pm2**：新增 `mcp-dbtools-run.cmd`（启动器：`cd` 到安装目录、
+  设 `JAVA_HOME`、用 `pythonw.exe` 后台运行）与 `mcp-dbtools-service.cmd`
+  （`install/start/stop/restart/status/logs/remove`）；检测到 pm2 管理着本服务时自动委托给 pm2，
+  否则使用 Windows 自带计划任务（管理员=开机自启 SYSTEM、普通用户=登录自启），
+  目标机**不需要 Node/pm2**。
+- **新增 `.gitattributes`**：`*.bat` / `*.cmd` 固定 `eol=crlf`（LF 结尾的批处理在部分 Windows
+  环境下解析异常），并把现有两个 `.bat` 转为 CRLF。
+- **CI 双形态产物**：Release 工作流同时构建 `--self-contained` 裸机包与轻量包。
+
+### 修复
+
+- **自包含包与轻量包产物同名互相覆盖**：`--self-contained` 产出的 zip 与轻量包同名，
+  后构建者会静默覆盖前者（自包含包曾因此丢失）；现自包含包产物名带 `-selfcontained`
+  （`mcp-dbtools-offline-windows-selfcontained-YYYYMMDD.zip`）。
+- **测试在 Python 3.10 下无法导入**：`tests/test_packaging.py` 使用了 `tomllib`（3.11 才进标准库），
+  而项目声明 `requires-python >=3.10`，在 3.10 上会直接 `ModuleNotFoundError`；改为
+  `try import tomllib / except → tomli`，并在 `pyproject.toml` dev extras 与 `requirements-dev.txt`
+  补上 `tomli; python_version < "3.11"`。
+
 ## [1.1.0] - 2026-09-17
 
 ### 新增
@@ -34,18 +65,6 @@
   附带 **CPython 官方安装器**（`python-3.13.x-amd64.exe`，`--with-python` 默认开启、`--no-python`
   可关闭），供 `Python <3.10` 的内网机离线**并行安装** 3.13（`install_offline.bat` 检测到版本
   不符时提示并可代跑安装器）。
-- **Windows 裸机自包含部署（`--self-contained`）**：构建时在包内**展开**便携运行时——
-  便携 CPython（`runtime\python`，含 pip/venv、自带 vcruntime，免安装免管理员）与
-  Eclipse Temurin JRE 17（`runtime\jre`）；目标机**无需预装 Python/JDK/Node**，解压后直接
-  运行 `install_offline.bat` 即可。安装脚本**优先用系统运行时、缺失或版本不符才回退包内运行时**。
-- **Windows 服务托管不再强制 pm2**：新增 `mcp-dbtools-run.cmd`（启动器：设工作目录与
-  `JAVA_HOME`、用 `pythonw` 后台运行）与 `mcp-dbtools-service.cmd`
-  （`install/start/stop/restart/status/logs/remove`）；检测到 pm2 管理着本服务时自动委托给 pm2，
-  否则使用 Windows 自带计划任务（管理员=开机自启、普通用户=登录自启），彻底不需要 Node。
-- **新增 `.gitattributes`**：`*.bat` / `*.cmd` 固定 `eol=crlf`（LF 结尾的批处理在部分 Windows
-  环境下解析异常），并把现有两个 `.bat` 转为 CRLF。
-- **CI 双形态产物**：Release 工作流同时构建 `--self-contained` 裸机包与轻量包，
-  产物名分别带 `-selfcontained` 与不帯后缀，避免互相覆盖。
 
 ### 修复
 
