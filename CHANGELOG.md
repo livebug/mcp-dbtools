@@ -5,6 +5,15 @@
 
 ## [Unreleased]
 
+### 安全
+
+- **工具响应不再暴露服务器绝对路径**：`save_script` 曾返回 `path`（绝对路径）、`execute_script` 曾返回
+  解析后的绝对 `script_path`，且脚本相关报错会打印解析后的绝对脚本根目录——这些内容会随 MCP 响应送达
+  客户端（可能为远程 LLM 客户端），属于不必要的信息泄露。现统一改为**脚本根目录内的相对路径**
+  （`saved` / `script_path`），报错中的目录提示经 `JDBCManager._safe_path_display` 脱敏
+  （相对配置值原样、绝对路径只保留末尾两级，如 `scripts/sql`）；驱动目录缺失提示同口径。
+  绝对路径作为 `script_path` 输入仍然兼容；服务端日志仍保留绝对路径供运维排查。
+
 ### 修复
 
 - **`save_script` 与 `execute_script` 无法配套使用**：`save_script` 返回的 `saved` 是相对脚本根目录的

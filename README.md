@@ -231,6 +231,8 @@ sudo systemctl enable --now mcp-dbtools
   - 数据源白名单：工具只能连 `datasources.json` 预配置的连接；
   - **写操作二次确认**：`DELETE/UPDATE/INSERT/DROP/TRUNCATE` 等默认拦截，需显式 `confirm=true` 才执行（并记审计）；
   - `execute_script` 默认只读，脚本路径限定在脚本根目录内（防目录穿越）；
+  - **不暴露服务器路径**：`save_script` / `execute_script` 的响应与报错只给脚本根目录内的相对路径，
+    不输出服务器绝对路径（绝对路径作为 `script_path` 输入仍兼容）；
   - `${VAR}` 参数替换：来源限 `params` 与环境变量，缺失即报错。
 - 全部调用写入审计（含调用方 IP / UA / SQL / 耗时）。
 
@@ -304,12 +306,12 @@ execute_script(
 
 ```python
 saved = save_script(name="daily.sql", content="SELECT '${V_DATE}' AS d;", overwrite=True)
-# saved -> {"saved": "daily.sql", "path": "D:\\mcp-dbtools\\scripts\\sql\\daily.sql", ...}
+# saved -> {"saved": "daily.sql", "bytes": 28, "overwritten": False}   # 不返回服务器绝对路径
 execute_script(datasource="gaussdb_test", script_path=saved["saved"], params={"V_DATE": "2026-08-08"})
 ```
 
-> `script_path` 既接受脚本根目录内的相对路径（`save_script` 返回的 `saved`），
-> 也接受绝对路径（其 `path`），无需手工拼接服务器上的绝对路径。
+> `script_path` 建议用 `save_script` 返回的 `saved`（脚本根目录内的相对路径）；绝对路径输入仍兼容，
+> 但响应与报错不会返回服务器绝对路径。
 
 返回每条语句的 `columns` / `rows` / `row_count` / `execution_time_ms` 及总耗时。示例脚本见 `scripts/sql/demo_daily.sql`。
 
@@ -320,6 +322,9 @@ execute_script(datasource="gaussdb_test", script_path=saved["saved"], params={"V
 ### 安全约束
 - 脚本文件必须位于脚本根目录内（默认 `scripts/sql`，可用 `MCP_DBTOOLS_SCRIPT_ROOT` 配置），防止目录穿越读取任意文件。
 - 默认 `read_only=true`，仅允许 `SELECT / SHOW / DESCRIBE / EXPLAIN / WITH` 语句；需要执行写操作时显式传 `read_only=false`（请谨慎，最终由数据库侧权限控制）。
+- **不泄露服务器路径**：`save_script` / `execute_script` 的响应与错误信息只返回脚本根目录内的**相对路径**
+  （如 `daily.sql`），不输出服务器绝对路径；报错中的目录提示也不会含绝对路径。绝对路径作为 `script_path`
+  输入仍然兼容（服务端日志保留绝对路径供运维排查）。
 - 多语句按分号拆分（忽略引号内分号与 `--` 行注释）；任一语句失败即停止后续。
 
 ## 监控与审计

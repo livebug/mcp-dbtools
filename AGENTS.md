@@ -56,6 +56,8 @@ GAUSS_PASSWORD=... . .venv/bin/activate && python -m mcp_dbtools --transport str
 - **写操作默认拦截**：DELETE/UPDATE/INSERT/DROP 等必须 `confirm=true` 才放行并记审计。
 - 工具只能连 `datasources.json` 预配置的连接，禁止接受任意 JDBC URL 参数。
 - 审计/监控对外输出不得包含密码（`safe_dict` 已脱敏，新加输出注意同样处理）。
+- 工具响应与错误信息**不得输出服务器绝对路径**：脚本相关统一用脚本根目录内的相对路径，
+  目录提示走 `JDBCManager._safe_path_display`（相对配置值原样、绝对路径只留末尾两级）。
 
 ## 提交要求
 

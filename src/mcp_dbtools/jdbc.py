@@ -249,9 +249,10 @@ class JDBCManager:
             if p.is_file():
                 paths.append(str(p.resolve()))
             else:
+                where = self._safe_path_display(self.drivers_dir) or "drivers"
                 raise JDBCError(
                     f"数据源 {ds.name} 缺少 JDBC 驱动: {jar}。"
-                    f"请将其放入 {self.drivers_dir}（可运行 scripts/download_drivers.py）"
+                    f"请将其放入驱动目录 {where}（可运行 scripts/download_drivers.py）"
                 )
         self._jar_cache[ds.name] = paths
         return paths
@@ -1124,7 +1125,7 @@ class JDBCManager:
             target.relative_to(root)
         except ValueError as exc:
             raise JDBCError(
-                f"脚本必须写入脚本根目录内（{root}），禁止写到目录外: {name}"
+                f"脚本必须写入脚本根目录内（{self._script_root_display()}），禁止写到目录外: {name}"
             ) from exc
         if target.is_dir():
             raise JDBCError(f"目标已存在且为目录: {name}")
@@ -1137,18 +1138,17 @@ class JDBCManager:
             target.write_text(content, encoding="utf-8")
         except OSError as exc:
             raise JDBCError(f"写入脚本失败: {exc}") from exc
-
         rel = str(target.relative_to(root))
         size = len(content.encode("utf-8"))
-        logger.info("保存脚本: %s (%d 字节)", rel, size)
+        # 服务端日志保留绝对路径（运维排查需要）；对外响应只给相对名，避免泄露服务器路径
+        logger.info("保存脚本: %s (%d 字节) -> %s", rel, size, target)
         return {
             "saved": rel,
-            "path": str(target),
             "bytes": size,
             "overwritten": existed,
             "message": (
                 f"脚本已保存: {rel}；执行时 execute_script 的 script_path "
-                f'可直接传相对名 "{rel}" 或绝对路径 "{target}"'
+                f'直接传 "{rel}" 即可'
             ),
             # 审计补充：脚本内容快照 + hash（供审计页面查看写入内容）
             "_audit_extra": {
@@ -1158,6 +1158,35 @@ class JDBCManager:
                 "bytes": size,
             },
         }
+
+    @staticmethod
+    def _safe_path_display(value: str | Path) -> str:
+        """把配置路径渲染为【不含服务器绝对路径】的描述（对外错误信息用）。
+
+        相对配置值原样显示；绝对路径（POSIX `/`、Windows 盘符 `D:/`、UNC `//`）
+        只保留末尾两级目录（如 `scripts/sql`），避免向 MCP 客户端泄露部署目录结构。
+        """
+        raw = str(value).replace("\\", "/").rstrip("/")
+        if not raw:
+            return ""
+        if not re.match(r"^(/|[A-Za-z]:/|//)", raw):
+            return raw
+        parts = [
+            seg for seg in raw.split("/") if seg and not re.fullmatch(r"[A-Za-z]:", seg)
+        ]
+        return "/".join(parts[-2:]) or raw
+
+    def _script_root_display(self) -> str:
+        """错误提示用的脚本根目录描述（绝不输出服务器绝对路径）。"""
+        return self._safe_path_display(self.settings.script_root) or "scripts/sql"
+
+    def _script_rel(self, p: Path) -> str:
+        """把脚本路径渲染为脚本根目录内的相对路径（对外输出用，避免泄露服务器绝对路径）。"""
+        root = Path(self.settings.script_root).resolve()
+        try:
+            return str(p.relative_to(root))
+        except ValueError:  # 理论上不可达：调用前已由 resolve_script_file 校验
+            return p.name
 
     def resolve_script_file(self, script_path: str) -> Path:
         """解析并校验脚本文件位于脚本根目录内（防目录穿越）。
@@ -1182,10 +1211,13 @@ class JDBCManager:
                 p.relative_to(root)
             except ValueError as exc:
                 raise JDBCError(
-                    f"脚本必须在脚本根目录内（{root}），禁止执行目录外文件: {p}"
+                    f"脚本必须在脚本根目录内（{self._script_root_display()}），"
+                    f"禁止执行目录外文件: {script_path}"
                 ) from exc
             return p
-        raise JDBCError(f"脚本文件不存在: {script_path}（脚本根目录: {root}）")
+        raise JDBCError(
+            f"脚本文件不存在: {script_path}（脚本根目录: {self._script_root_display()}）"
+        )
 
     def execute_script(
         self,
@@ -1294,7 +1326,7 @@ class JDBCManager:
 
         return {
             "datasource": ds.name,
-            "script_path": str(p),
+            "script_path": self._script_rel(p),
             "params": params or {},
             "statement_count": len(results),
             "results": results,

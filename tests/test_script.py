@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -207,11 +208,12 @@ def test_save_then_execute_with_returned_values(tmp_path):
 
     by_name = m.execute_script(ds, saved["saved"])          # 相对名
     assert by_name["statement_count"] == 1
-    assert Path(by_name["script_path"]) == (root / "demo_saved.sql").resolve()
+    assert by_name["script_path"] == "demo_saved.sql"       # 对外只给相对路径
 
-    by_path = m.execute_script(ds, saved["path"])           # 绝对路径
-    assert by_path["statement_count"] == 1
-    assert by_path["script_path"] == by_name["script_path"]
+    # 绝对路径输入仍然兼容（旧写法），但响应同样不暴露绝对路径
+    by_abs = m.execute_script(ds, str((root / "demo_saved.sql").resolve()))
+    assert by_abs["statement_count"] == 1
+    assert by_abs["script_path"] == by_name["script_path"]
 
 
 def test_save_then_execute_relative_name_from_other_cwd(tmp_path, monkeypatch):
@@ -222,7 +224,7 @@ def test_save_then_execute_relative_name_from_other_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)                                  # cwd ≠ 脚本根目录
     res = m.execute_script(ds, saved["saved"])
     assert res["results"][0]["ok"] is True
-    assert Path(res["script_path"]) == (root / "sub/nested.sql").resolve()
+    assert res["script_path"] == "sub/nested.sql"
 
 
 def test_execute_script_relative_traversal_blocked(tmp_path):
@@ -239,3 +241,27 @@ def test_execute_script_empty_path(tmp_path):
     m, ds, root = make_manager(tmp_path, [])
     with pytest.raises(JDBCError, match="不能为空"):
         m.execute_script(ds, "   ")
+
+
+def test_script_tools_do_not_leak_absolute_paths(tmp_path):
+    """工具响应与错误信息不得包含服务器绝对路径（含脚本根目录的绝对路径）。"""
+    m, ds, root = make_manager(tmp_path, [("row1",)])
+    abs_root = str(root.resolve())
+
+    saved = m.save_script("leak_check.sql", "SELECT 1;")
+    dumped = json.dumps(saved, ensure_ascii=False, default=str)
+    assert abs_root not in dumped, f"save_script 响应泄露绝对路径: {dumped}"
+    assert saved["saved"] == "leak_check.sql"
+
+    res = m.execute_script(ds, saved["saved"])
+    dumped = json.dumps(res, ensure_ascii=False, default=str)
+    assert abs_root not in dumped, f"execute_script 响应泄露绝对路径: {dumped}"
+
+    # 错误信息同样不能泄露
+    with pytest.raises(JDBCError) as exc:
+        m.execute_script(ds, "missing.sql")
+    assert abs_root not in str(exc.value)
+
+    with pytest.raises(JDBCError) as exc2:
+        m.execute_script(ds, "../evil.sql")
+    assert abs_root not in str(exc2.value)
