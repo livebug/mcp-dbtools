@@ -59,9 +59,14 @@ jobs:
         run: python -m pytest -q
 
       - name: 构建离线包（Linux + Windows 自包含）
+        env:
+          # 认证后 GitHub API 限额 5000 次/小时（匿名仅 60，易 403 rate limit）
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/build_offline.sh --platform all --self-contained
 
       - name: 构建 Windows 轻量包（目标机已有 Python/JDK 时体积更小）
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bash scripts/build_offline.sh --platform windows
 
       - name: 生成 SHA256 校验和

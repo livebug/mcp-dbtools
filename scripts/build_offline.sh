@@ -145,6 +145,60 @@ fetch_python_installer() {
   fi
 }
 
+# 解析便携 CPython 的下载地址
+# 顺序：显式环境变量（不走 API，可复现）→ 已登录的 gh CLI → 匿名 API（可带 GITHUB_TOKEN）
+# 背景：api.github.com 匿名限流 60 次/小时，构建频繁时会 403 rate limit exceeded
+resolve_portable_python_url() {
+  local PYVER="$1" TAG="${PBS_RELEASE_TAG:-latest}" FULL="${PORTABLE_PY_FULL_VER:-}"
+
+  # 1) 显式指定补丁版本与 tag：直接拼 URL，完全不依赖 API
+  if [ -n "$FULL" ] && [ "$TAG" != "latest" ]; then
+    echo "https://github.com/astral-sh/python-build-standalone/releases/download/${TAG}/cpython-${FULL}+${TAG}-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
+    return 0
+  fi
+
+  local API_PATH="releases/latest"
+  [ "$TAG" != "latest" ] && API_PATH="releases/tags/${TAG}"
+
+  # 2) 已登录的 gh CLI（认证后限额 5000 次/小时）
+  if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+    local URL
+    URL="$(gh api "repos/astral-sh/python-build-standalone/${API_PATH}" \
+        --jq '.assets[].browser_download_url' 2>/dev/null \
+      | grep -E "cpython-${PYVER//./\\.}\\.[0-9]+(%2B|\\+).*-x86_64-pc-windows-msvc-install_only_stripped\\.tar\\.gz$" \
+      | head -1 || true)"
+    if [ -n "$URL" ]; then
+      echo "$URL"
+      return 0
+    fi
+  fi
+
+  # 3) urllib 兜底（支持 GITHUB_TOKEN / GH_TOKEN；失败不抛堆栈，返回空由调用方给指引）
+  "$PY" - "$PYVER" "$API_PATH" <<'PYEOF' || true
+import json, os, re, sys, urllib.request
+
+ver, api_path = sys.argv[1], sys.argv[2]
+api = f"https://api.github.com/repos/astral-sh/python-build-standalone/{api_path}"
+headers = {"User-Agent": "mcp-dbtools-build", "Accept": "application/vnd.github+json"}
+token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+if token:
+    headers["Authorization"] = f"Bearer {token}"
+pat = re.compile(
+    rf"cpython-{re.escape(ver)}\.\d+\+.*-x86_64-pc-windows-msvc-install_only_stripped\.tar\.gz$"
+)
+try:
+    req = urllib.request.Request(api, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.load(resp)
+except Exception:          # 限流 / 网络异常：交给调用方提示，不中断堆栈
+    sys.exit(0)
+for asset in data.get("assets", []):
+    if pat.search(asset["name"]):
+        print(asset["browser_download_url"])
+        break
+PYEOF
+}
+
 # 下载并【展开】Windows 自包含运行时：便携 CPython + Temurin JRE
 # 直接展开为 runtime/python、runtime/jre，目标机无需解压工具、无需安装、免管理员
 fetch_runtime_windows() {
@@ -160,40 +214,30 @@ fetch_runtime_windows() {
   # ---------- 1) 便携 CPython（install_only_stripped：解压即用、含 pip/venv、自带 vcruntime） ----------
   echo "==> 下载便携 CPython ${PYVER}（Windows x64，stripped）"
   local PY_URL
-  PY_URL="$("$PY" - "$PYVER" <<'PYEOF'
-import json, re, sys, urllib.request
-
-ver = sys.argv[1]
-api = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
-req = urllib.request.Request(api, headers={"User-Agent": "mcp-dbtools-build"})
-with urllib.request.urlopen(req, timeout=60) as resp:
-    data = json.load(resp)
-pat = re.compile(
-    rf"cpython-{re.escape(ver)}\.\d+\+.*-x86_64-pc-windows-msvc-install_only_stripped\.tar\.gz$"
-)
-for asset in data.get("assets", []):
-    if pat.search(asset["name"]):
-        print(asset["browser_download_url"])
-        break
-PYEOF
-)"
+  PY_URL="$(resolve_portable_python_url "$PYVER")"
   if [ -z "$PY_URL" ]; then
-    echo "    [WARN] 未找到便携 CPython ${PYVER}，跳过（自包含包将不完整）"
-  elif curl -fsSL --max-time 900 -o "$RT/python.tar.gz" "$PY_URL"; then
-    mkdir -p "$RT/python"
-    tar xzf "$RT/python.tar.gz" -C "$RT/python" --strip-components=1
-    rm -f "$RT/python.tar.gz"
-    if [ -x "$RT/python/python.exe" ] || [ -f "$RT/python/python.exe" ]; then
-      echo "    便携 Python: $(du -sm "$RT/python" | cut -f1) MB（含 python.exe / pythonw.exe / pip / venv）"
-      echo "portable-python: $(basename "$PY_URL")" >> "$MANIFEST"
-    else
-      echo "    [WARN] 便携 Python 解压后缺少 python.exe，已清理"
-      rm -rf "$RT/python"
-    fi
-  else
-    echo "    [WARN] 便携 CPython 下载失败: $PY_URL"
-    rm -rf "$RT/python.tar.gz"
+    echo "[ERROR] 无法解析便携 CPython ${PYVER} 的下载地址（GitHub API 限流？）。可选处理："
+    echo "        1) 先登录 gh CLI（用认证额度，5000 次/小时）：gh auth login"
+    echo "        2) 设置 GITHUB_TOKEN 环境变量"
+    echo "        3) 完全不走 API，显式指定版本与 tag："
+    echo "           PBS_RELEASE_TAG=20260901 PORTABLE_PY_FULL_VER=3.13.15 \\"
+    echo "             bash scripts/build_offline.sh --platform windows --self-contained"
+    exit 1
   fi
+  if ! curl -fsSL --max-time 900 -o "$RT/python.tar.gz" "$PY_URL"; then
+    echo "[ERROR] 便携 CPython 下载失败: $PY_URL"
+    rm -f "$RT/python.tar.gz"
+    exit 1
+  fi
+  mkdir -p "$RT/python"
+  tar xzf "$RT/python.tar.gz" -C "$RT/python" --strip-components=1
+  rm -f "$RT/python.tar.gz"
+  if [ ! -f "$RT/python/python.exe" ]; then
+    echo "[ERROR] 便携 Python 解压后缺少 python.exe，请检查下载包是否完整"
+    exit 1
+  fi
+  echo "    便携 Python: $(du -sm "$RT/python" | cut -f1) MB（含 python.exe / pythonw.exe / pip / venv）"
+  echo "portable-python: $(basename "$PY_URL")" >> "$MANIFEST"
 
   # ---------- 2) Temurin JRE（JDBC 需要 JVM；解压即用，设 JAVA_HOME 即可） ----------
   echo "==> 下载 Eclipse Temurin JRE ${JRE_VERSION:-17}（Windows x64）"
@@ -208,12 +252,15 @@ PYEOF
       echo "    JRE: $(du -sm "$RT/jre" | cut -f1) MB（$(basename "$JRE_TOP")）"
       echo "temurin-jre: $(basename "$JRE_TOP")" >> "$MANIFEST"
     else
-      echo "    [WARN] JRE 解压结果异常（缺 bin/server/jvm.dll），已清理"
+      echo "[ERROR] JRE 解压结果异常（缺 bin/server/jvm.dll），已清理"
       rm -rf "$RT/jre-tmp" "$RT/jre.zip"
+      exit 1
     fi
   else
-    echo "    [WARN] JRE 下载失败，跳过（目标机需自行准备 JDK/JRE 11+）"
+    echo "[ERROR] JRE 下载失败（网络或 api.adoptium.net 不可达）: $JRE_URL"
     rm -f "$RT/jre.zip"
+    echo "        可直接下载后放入 $RT 再重试，或用 --no-python 构建非自包含包"
+    exit 1
   fi
 
   echo "    运行时清单: $MANIFEST"

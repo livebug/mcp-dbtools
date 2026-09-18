@@ -49,6 +49,10 @@ bash scripts/build_offline.sh --platform windows --self-contained # 裸机：包
   产物名带 `-selfcontained`，**不要和轻量包同名**（早期版本会互相覆盖）
 - Windows 包还带 `mcp-dbtools-run.cmd`（启动器）+ `mcp-dbtools-service.cmd`（服务管理，
   pm2 优先、否则计划任务）——**批处理必须 CRLF**（见 .gitattributes）
+- **便携 Python 下载地址解析失败会直接报错退出**（不静默产出残缺包）：解析顺序为
+  显式 `PBS_RELEASE_TAG` + `PORTABLE_PY_FULL_VER`（不走 API，可复现）→ 已登录 `gh` CLI →
+  带 `GITHUB_TOKEN` 的 API。**匿名 api.github.com 限流 60 次/小时，连续构建会 403**；
+  CI 已在构建步骤传入 `secrets.GITHUB_TOKEN`
 - 组装：`dist/` + `wheels/` + `drivers/` + `config/` + `scripts/sql` + `scripts/encrypt_password.py`
   + `docs/` + `README-二次开发.md` + pm2 配置 + `install.sh` / `upgrade.sh`
 
