@@ -14,8 +14,12 @@ from __future__ import annotations
 
 import json
 import re
-import tomllib
 from pathlib import Path
+
+try:  # Python 3.11+
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10（项目声明的下限）
+    import tomli as tomllib  # type: ignore[no-redef]
 
 import mcp_dbtools
 
