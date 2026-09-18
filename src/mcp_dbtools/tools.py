@@ -84,7 +84,13 @@ def register_tools(
     def execute_script(
         datasource: DatasourceArg,
         script_path: Annotated[
-            str, Field(description="服务器上的 SQL 脚本文件路径（须在脚本根目录内）")
+            str,
+            Field(
+                description=(
+                    "SQL 脚本路径：脚本根目录内的相对路径（如 save_script 返回的 saved）"
+                    "或绝对路径（save_script 返回的 path），两者均可直接使用"
+                )
+            ),
         ],
         params: Annotated[
             dict[str, Any] | None, Field(description="脚本参数，替换 ${V_DATE} 等占位符")
@@ -101,7 +107,8 @@ def register_tools(
     ) -> dict[str, Any] | str:
         """执行服务器上的 SQL 脚本文件，支持 ${VAR} 参数占位符（如 ${V_DATE}）。
 
-        参数来源：params -> 环境变量 -> 缺失报错。脚本须位于脚本根目录内。
+        参数来源：params -> 环境变量 -> 缺失报错。脚本须位于脚本根目录内，
+        script_path 可传相对名（save_script 返回的 saved）或绝对路径（其 path）。
         默认只读；写操作需 read_only=false + confirm=true 二次确认并记审计。
         """
         try:
@@ -126,9 +133,11 @@ def register_tools(
             bool, Field(description="同名脚本已存在时是否覆盖（默认 false）")
         ] = False,
     ) -> dict[str, Any] | str:
-        """保存 SQL 脚本到服务器脚本目录（供 execute_script 按路径执行）。
+        """保存 SQL 脚本到服务器脚本目录（供 execute_script 执行）。
 
         推荐流程：save_script 落盘（可审计、可复用、可重跑）→ execute_script 执行。
+        返回值中 saved 为脚本根目录内的相对名、path 为绝对路径，两者都可直接
+        作为 execute_script 的 script_path 传入（无需手工拼接绝对路径）。
         写入内容会记入审计（审计页面可查看脚本原文）。
         """
         try:

@@ -201,6 +201,7 @@ sudo systemctl enable --now mcp-dbtools
 | `test_connection` | 测试 JDBC 连接，返回产品与版本 |
 | `execute_query` | 执行 SQL（默认只读，写操作需 `confirm`；默认返回 300 行） |
 | `execute_script` | **执行 SQL 脚本文件**，支持 `${V_DATE}` 等参数占位符 |
+| `save_script` | **保存 SQL 脚本** 到脚本根目录（返回 `saved` 相对名 / `path` 绝对路径，可直接传给 `execute_script`） |
 | `list_schemas` | 列出 schema / 数据库 |
 | `list_tables` | 列出表（可按 schema、表名过滤） |
 | `describe_table` | 查看表结构 |
@@ -294,10 +295,21 @@ GET /export/{id}/download
 # MCP 客户端调用
 execute_script(
     datasource="gaussdb_test",
-    script_path="scripts/sql/demo_daily.sql",   # 服务器上脚本根目录内的文件
+    script_path="demo_daily.sql",               # 脚本根目录内的相对路径（也可传绝对路径）
     params={"V_DATE": "2026-08-08"},            # 替换脚本中的 ${V_DATE}
 )
 ```
+
+推荐流程（先落盘再执行：可审计、可复用、可重跑）：
+
+```python
+saved = save_script(name="daily.sql", content="SELECT '${V_DATE}' AS d;", overwrite=True)
+# saved -> {"saved": "daily.sql", "path": "D:\\mcp-dbtools\\scripts\\sql\\daily.sql", ...}
+execute_script(datasource="gaussdb_test", script_path=saved["saved"], params={"V_DATE": "2026-08-08"})
+```
+
+> `script_path` 既接受脚本根目录内的相对路径（`save_script` 返回的 `saved`），
+> 也接受绝对路径（其 `path`），无需手工拼接服务器上的绝对路径。
 
 返回每条语句的 `columns` / `rows` / `row_count` / `execution_time_ms` 及总耗时。示例脚本见 `scripts/sql/demo_daily.sql`。
 

@@ -3,6 +3,21 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 修复
+
+- **`save_script` 与 `execute_script` 无法配套使用**：`save_script` 返回的 `saved` 是相对脚本根目录的
+  文件名，而 `execute_script` 此前把传入路径按**进程当前工作目录**解析（`Path(script_path).resolve()`），
+  因此推荐流程「save_script 落盘 → execute_script 执行」只有在工作目录恰好等于脚本根目录时才成功，
+  否则报 `脚本文件不存在: xxx.sql`。现 `resolve_script_file` 支持两种写法：
+  **脚本根目录内的相对路径**（优先，与 `save_script` 写入位置一致）或**绝对路径**，
+  相对路径回退到工作目录解析以兼容旧写法；目录穿越校验不变。
+  同时明确 `save_script` 的返回文案与工具说明（`saved` / `path` 均可直接作为 `script_path`）。
+- **文档缺失**：`save_script` 此前未写入 README 工具表与使用说明（仅 `execute_script` 有说明），现已补上
+  参数表与配套流程；同时更正 README / 使用说明 / AGENTS.md 中过期的工具数（19 → **20**，`save_script`
+  自 v1.1.0 起就未计入）。
+
 ## [1.2.0] - 2026-09-18
 
 ### 新增

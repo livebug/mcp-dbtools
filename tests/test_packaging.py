@@ -105,3 +105,15 @@ def test_windows_bare_metal_deployment_support():
     runner = (win / "mcp-dbtools-run.cmd").read_text(encoding="utf-8", errors="replace")
     assert "JAVA_HOME" in runner, "启动器必须设置 JAVA_HOME，否则 JPype 找不到 JVM"
     assert "pythonw" in runner, "后台运行应使用 pythonw.exe（无控制台窗口）"
+
+
+def test_documented_tool_count_matches_code():
+    """文档声明的工具数必须与实际实现一致（曾出现 save_script 未计入，文档长期写 19）。"""
+    src = (ROOT / "src" / "mcp_dbtools" / "tools.py").read_text(encoding="utf-8")
+    count = len(re.findall(r"@wrap_tool\(monitor,", src))
+    assert count > 0, "未找到任何被审计包装的工具"
+    doc = (ROOT / "docs" / "使用说明.md").read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    assert f"{count} 个 MCP 工具" in doc, f"使用说明应写 {count} 个 MCP 工具"
+    assert f"{count} 个 MCP 工具定义" in doc, f"使用说明目录树应写 {count} 个 MCP 工具定义"
+    assert f"{count} 个 MCP 工具定义" in agents, f"AGENTS.md 应写 {count} 个 MCP 工具定义"

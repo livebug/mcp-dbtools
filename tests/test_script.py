@@ -193,3 +193,49 @@ def test_execute_script_missing_file(tmp_path):
     m, ds, root = make_manager(tmp_path, [])
     with pytest.raises(JDBCError):
         m.execute_script(ds, str(root / "nope.sql"))
+
+
+# ---------- save_script 与 execute_script 的协作（回归） ----------
+def test_save_then_execute_with_returned_values(tmp_path):
+    """save_script 返回的相对名与绝对路径都应能直接作为 execute_script 的 script_path。
+
+    回归：此前 execute_script 只能吃绝对路径，而 save_script 的 saved 是相对名，
+    两者无法直接协作。
+    """
+    m, ds, root = make_manager(tmp_path, [("row1",)])
+    saved = m.save_script("demo_saved.sql", "SELECT 1 AS n;")
+
+    by_name = m.execute_script(ds, saved["saved"])          # 相对名
+    assert by_name["statement_count"] == 1
+    assert Path(by_name["script_path"]) == (root / "demo_saved.sql").resolve()
+
+    by_path = m.execute_script(ds, saved["path"])           # 绝对路径
+    assert by_path["statement_count"] == 1
+    assert by_path["script_path"] == by_name["script_path"]
+
+
+def test_save_then_execute_relative_name_from_other_cwd(tmp_path, monkeypatch):
+    """工作目录不在脚本根目录时，save_script 返回的相对名仍可用（核心回归点）。"""
+    m, ds, root = make_manager(tmp_path, [("row1",)])
+    saved = m.save_script("sub/nested.sql", "SELECT 1 AS n;")   # 支持子目录
+
+    monkeypatch.chdir(tmp_path)                                  # cwd ≠ 脚本根目录
+    res = m.execute_script(ds, saved["saved"])
+    assert res["results"][0]["ok"] is True
+    assert Path(res["script_path"]) == (root / "sub/nested.sql").resolve()
+
+
+def test_execute_script_relative_traversal_blocked(tmp_path):
+    """相对路径的目录穿越必须被拒绝（不能因相对解析而绕过脚本根目录限制）。"""
+    m, ds, root = make_manager(tmp_path, [])
+    outside = root.parent / "evil.sql"          # 脚本根目录的上一级
+    outside.write_text("SELECT 1;", encoding="utf-8")
+    assert outside.is_file()
+    with pytest.raises(JDBCError, match="脚本根目录内"):
+        m.execute_script(ds, "../evil.sql")
+
+
+def test_execute_script_empty_path(tmp_path):
+    m, ds, root = make_manager(tmp_path, [])
+    with pytest.raises(JDBCError, match="不能为空"):
+        m.execute_script(ds, "   ")

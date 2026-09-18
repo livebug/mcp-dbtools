@@ -1146,7 +1146,10 @@ class JDBCManager:
             "path": str(target),
             "bytes": size,
             "overwritten": existed,
-            "message": f"脚本已保存: {rel}（可用 execute_script 按此路径执行）",
+            "message": (
+                f"脚本已保存: {rel}；执行时 execute_script 的 script_path "
+                f'可直接传相对名 "{rel}" 或绝对路径 "{target}"'
+            ),
             # 审计补充：脚本内容快照 + hash（供审计页面查看写入内容）
             "_audit_extra": {
                 "script_name": rel,
@@ -1157,18 +1160,32 @@ class JDBCManager:
         }
 
     def resolve_script_file(self, script_path: str) -> Path:
-        """解析并校验脚本文件位于脚本根目录内（防目录穿越）。"""
+        """解析并校验脚本文件位于脚本根目录内（防目录穿越）。
+
+        为便于与 save_script 的返回值配套使用，支持两种写法：
+        - 脚本根目录内的相对路径（save_script 返回的 saved）
+        - 绝对路径（save_script 返回的 path）
+
+        相对路径优先按脚本根目录解析（与 save_script 写入位置一致），
+        不存在时再按当前工作目录解析，兼容旧写法。
+        """
+        if not script_path or not str(script_path).strip():
+            raise JDBCError("脚本路径不能为空")
         root = Path(self.settings.script_root).resolve()
-        p = Path(script_path).resolve()
-        if not p.is_file():
-            raise JDBCError(f"脚本文件不存在: {script_path}")
-        try:
-            p.relative_to(root)
-        except ValueError as exc:
-            raise JDBCError(
-                f"脚本必须在脚本根目录内（{root}），禁止执行目录外文件: {p}"
-            ) from exc
-        return p
+        raw = Path(str(script_path).strip())
+        candidates = [raw] if raw.is_absolute() else [root / raw, raw]
+        for cand in candidates:
+            p = cand.resolve()
+            if not p.is_file():
+                continue
+            try:
+                p.relative_to(root)
+            except ValueError as exc:
+                raise JDBCError(
+                    f"脚本必须在脚本根目录内（{root}），禁止执行目录外文件: {p}"
+                ) from exc
+            return p
+        raise JDBCError(f"脚本文件不存在: {script_path}（脚本根目录: {root}）")
 
     def execute_script(
         self,
