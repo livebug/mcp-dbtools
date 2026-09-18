@@ -44,6 +44,8 @@
   否则使用 Windows 自带计划任务（管理员=开机自启、普通用户=登录自启），彻底不需要 Node。
 - **新增 `.gitattributes`**：`*.bat` / `*.cmd` 固定 `eol=crlf`（LF 结尾的批处理在部分 Windows
   环境下解析异常），并把现有两个 `.bat` 转为 CRLF。
+- **CI 双形态产物**：Release 工作流同时构建 `--self-contained` 裸机包与轻量包，
+  产物名分别带 `-selfcontained` 与不帯后缀，避免互相覆盖。
 
 ### 修复
 

@@ -15,6 +15,7 @@
 #                         目标机无需预装 Python / JDK / Node（pm2 也不再必需），
 #                         解压即用、免管理员、不写 PATH/注册表。
 #                         包体积约 74 MB（自动跳过官方安装器，避免重复）
+#                         产物名: mcp-dbtools-offline-windows-selfcontained-YYYYMMDD.zip
 #
 # 产物（项目根目录下）:
 #   mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
@@ -58,6 +59,11 @@ esac
 if [ "$SELF_CONTAINED" = "1" ] && [ "$PLATFORM" = "linux" ]; then
   echo "[WARN] --self-contained 目前仅支持 Windows 包，已忽略该选项"
   SELF_CONTAINED=0
+fi
+# Windows 产物名：自包含包带 -selfcontained，避免与轻量包同名互相覆盖
+WIN_ZIP_NAME="mcp-dbtools-offline-windows-${STAMP}.zip"
+if [ "$SELF_CONTAINED" = "1" ]; then
+  WIN_ZIP_NAME="mcp-dbtools-offline-windows-selfcontained-${STAMP}.zip"
 fi
 
 echo "==> 构建平台: $PLATFORM | Python $PY_VER | 架构 $ARCH"
@@ -243,7 +249,7 @@ build_linux() {
 # ---------- Windows 包 ----------
 build_windows() {
   local PKG="offline/mcp-dbtools-offline-windows"
-  local ZIP="mcp-dbtools-offline-windows-${STAMP}.zip"
+  local ZIP="$WIN_ZIP_NAME"
   # Windows 目标平台: win_amd64 + CPython 3.13（与 README-windows.md 一致）
   local WIN_PY_VER="${WIN_PYTHON_VER:-3.13}"
   echo "==> [2] 下载 Windows 依赖 wheel（win_amd64, Python $WIN_PY_VER）"
@@ -292,7 +298,7 @@ esac
 echo ""
 echo "完成。离线包已生成，拷贝到内网后解压执行:"
 echo "  Linux  : tar xzf mcp-dbtools-offline-linux-${STAMP}.tar.gz && bash mcp-dbtools-offline-linux/install.sh"
-echo "  Windows: 解压 mcp-dbtools-offline-windows-${STAMP}.zip 后双击 install_offline.bat"
+echo "  Windows: 解压 $WIN_ZIP_NAME 后双击 install_offline.bat"
 echo "  二次开发: 源码在包内 source/，见 README-二次开发.md（内网可 pip install -e .）"
 if [ "$SELF_CONTAINED" = "1" ]; then
   echo "  自包含包: 目标机无需 Python/JDK/Node，解压即用（运行 runtime/ 内便携 Python 与 JRE）"

@@ -8,7 +8,8 @@
 # Release 附件：
 #   - mcp_dbtools-<ver>-py3-none-any.whl          项目 wheel（纯 Python，几十 KB）
 #   - mcp-dbtools-offline-linux-YYYYMMDD.tar.gz   内网离线包（含源码快照 + 依赖 wheel）
-#   - mcp-dbtools-offline-windows-YYYYMMDD.zip    内网离线包（含源码快照 + 依赖 wheel）
+#   - mcp-dbtools-offline-windows-YYYYMMDD.zip    内网离线包（同前，需目标机有 Python/JDK）
+#   - mcp-dbtools-offline-windows-selfcontained-YYYYMMDD.zip  裸机包（包内带便携 Python + JRE 17）
 #   - SHA256SUMS.txt                              校验和
 #   GitHub 还会自动附带 Source code (zip / tar.gz)，即纯源码包（约几百 KB），
 #   供内网只取源码做二次开发时使用。
@@ -57,8 +58,11 @@ jobs:
       - name: 运行测试
         run: python -m pytest -q
 
-      - name: 构建离线包（Linux + Windows）
-        run: bash scripts/build_offline.sh --platform all
+      - name: 构建离线包（Linux + Windows 自包含）
+        run: bash scripts/build_offline.sh --platform all --self-contained
+
+      - name: 构建 Windows 轻量包（目标机已有 Python/JDK 时体积更小）
+        run: bash scripts/build_offline.sh --platform windows
 
       - name: 生成 SHA256 校验和
         run: |

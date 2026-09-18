@@ -4,10 +4,10 @@
 
 ## 两种包形态
 
-| 形态 | 目标机前置 | 包体积 | 构建命令 |
+| 形态 | 目标机前置 | 包体积 | 构建命令 / 产物名 |
 | --- | --- | --- | --- |
-| **轻量包**（默认） | 需 Python 3.13（64 位）+ JDK/JRE 11+ | ≈ 39 MB（含 Python 安装器） | `--platform windows` |
-| **自包含包** | **无需任何预装**（Python / JDK / Node 都不用） | ≈ 74 MB | `--platform windows --self-contained` |
+| **轻量包**（默认） | 需 Python 3.13（64 位）+ JDK/JRE 11+ | ≈ 39 MB | `--platform windows` → `mcp-dbtools-offline-windows-YYYYMMDD.zip` |
+| **自包含包** | **无需任何预装**（Python / JDK / Node 都不用） | ≈ 74 MB | `--platform windows --self-contained` → `mcp-dbtools-offline-windows-selfcontained-YYYYMMDD.zip` |
 
 自包含包在包内直接展开好解压即用的运行时：
 

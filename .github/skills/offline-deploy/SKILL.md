@@ -45,7 +45,8 @@ bash scripts/build_offline.sh --platform windows --self-contained # 裸机：包
 - **`--self-contained`（Windows 裸机）**：把便携 CPython（python-build-standalone 的
   `install_only_stripped`，**必须 stripped 版**，体积 20.9MB vs 44.9MB）+ Temurin JRE 17
   **解压展开**到 `runtime/python`、`runtime/jre`（目标机无需解压工具），并写
-  `runtime/runtime-manifest.txt` 记录版本来源；此时自动跳过官方安装器避免重复
+  `runtime/runtime-manifest.txt` 记录版本来源；此时自动跳过官方安装器避免重复。
+  产物名带 `-selfcontained`，**不要和轻量包同名**（早期版本会互相覆盖）
 - Windows 包还带 `mcp-dbtools-run.cmd`（启动器）+ `mcp-dbtools-service.cmd`（服务管理，
   pm2 优先、否则计划任务）——**批处理必须 CRLF**（见 .gitattributes）
 - 组装：`dist/` + `wheels/` + `drivers/` + `config/` + `scripts/sql` + `scripts/encrypt_password.py`
