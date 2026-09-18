@@ -74,3 +74,34 @@ def test_offline_scripts_use_python_version_marker():
         "deploy/windows/upgrade_offline.bat",
     ):
         assert "python-version-required.txt" in (ROOT / rel).read_text(encoding="utf-8"), rel
+
+
+def test_bat_and_cmd_use_crlf():
+    """Windows 批处理必须 CRLF：LF 结尾的 .bat/.cmd 在部分 Windows 环境下解析异常。"""
+    ga = (ROOT / ".gitattributes").read_text(encoding="utf-8")
+    assert "*.bat text eol=crlf" in ga and "*.cmd text eol=crlf" in ga, ga
+    files = sorted(p for p in (ROOT / "deploy" / "windows").iterdir() if p.suffix in (".bat", ".cmd"))
+    assert files, "未找到任何 .bat/.cmd"
+    for p in files:
+        data = p.read_bytes()
+        assert data.count(b"\n") == data.count(b"\r\n"), f"{p.name} 必须为 CRLF 换行"
+
+
+def test_windows_bare_metal_deployment_support():
+    """裸机部署：构建脚本支持 --self-contained，安装/启动脚本能从 runtime\\ 回退取运行时。"""
+    build = (ROOT / "scripts" / "build_offline.sh").read_text(encoding="utf-8")
+    assert "--self-contained" in build
+    assert "install_only_stripped" in build, "便携 Python 必须用 stripped 版（否则大 24MB）"
+    assert "api.adoptium.net" in build, "JRE 应来自 Adoptium"
+
+    win = ROOT / "deploy" / "windows"
+    install = (win / "install_offline.bat").read_text(encoding="utf-8", errors="replace")
+    assert r"runtime\python\python.exe" in install, "安装脚本应能回退到包内便携 Python"
+    assert r"runtime\jre" in install, "安装脚本应能回退到包内 JRE"
+    assert "mcp-dbtools-service.cmd" in install, "安装时应能注册计划任务"
+
+    for name in ("mcp-dbtools-run.cmd", "mcp-dbtools-service.cmd"):
+        assert (win / name).is_file(), name
+    runner = (win / "mcp-dbtools-run.cmd").read_text(encoding="utf-8", errors="replace")
+    assert "JAVA_HOME" in runner, "启动器必须设置 JAVA_HOME，否则 JPype 找不到 JVM"
+    assert "pythonw" in runner, "后台运行应使用 pythonw.exe（无控制台窗口）"

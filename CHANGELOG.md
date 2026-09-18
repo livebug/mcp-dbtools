@@ -34,6 +34,16 @@
   附带 **CPython 官方安装器**（`python-3.13.x-amd64.exe`，`--with-python` 默认开启、`--no-python`
   可关闭），供 `Python <3.10` 的内网机离线**并行安装** 3.13（`install_offline.bat` 检测到版本
   不符时提示并可代跑安装器）。
+- **Windows 裸机自包含部署（`--self-contained`）**：构建时在包内**展开**便携运行时——
+  便携 CPython（`runtime\python`，含 pip/venv、自带 vcruntime，免安装免管理员）与
+  Eclipse Temurin JRE 17（`runtime\jre`）；目标机**无需预装 Python/JDK/Node**，解压后直接
+  运行 `install_offline.bat` 即可。安装脚本**优先用系统运行时、缺失或版本不符才回退包内运行时**。
+- **Windows 服务托管不再强制 pm2**：新增 `mcp-dbtools-run.cmd`（启动器：设工作目录与
+  `JAVA_HOME`、用 `pythonw` 后台运行）与 `mcp-dbtools-service.cmd`
+  （`install/start/stop/restart/status/logs/remove`）；检测到 pm2 管理着本服务时自动委托给 pm2，
+  否则使用 Windows 自带计划任务（管理员=开机自启、普通用户=登录自启），彻底不需要 Node。
+- **新增 `.gitattributes`**：`*.bat` / `*.cmd` 固定 `eol=crlf`（LF 结尾的批处理在部分 Windows
+  环境下解析异常），并把现有两个 `.bat` 转为 CRLF。
 
 ### 修复
 

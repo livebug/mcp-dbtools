@@ -1,0 +1,8 @@
+# Windows 批处理必须用 CRLF：LF 结尾的 .bat/.cmd 在部分 Windows 环境下解析异常
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 脚本与源码用 LF
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf

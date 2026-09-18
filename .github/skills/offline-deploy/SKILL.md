@@ -29,7 +29,8 @@ user-invocable: true
 ### 1. 外网构建机：生成离线包
 ```bash
 bash scripts/build_offline.sh --platform linux     # 或 windows / all
-bash scripts/build_offline.sh --platform windows --no-python   # 不附带 Python 安装器（省 ~29MB）
+bash scripts/build_offline.sh --platform windows --no-python     # 不附带 Python 安装器（省 ~29MB）
+bash scripts/build_offline.sh --platform windows --self-contained # 裸机：包内带便携 Python + JRE 17
 # 产物: mcp-dbtools-offline-linux-YYYYMMDD.tar.gz / mcp-dbtools-offline-windows-YYYYMMDD.zip
 ```
 
@@ -41,6 +42,12 @@ bash scripts/build_offline.sh --platform windows --no-python   # 不附带 Pytho
 - 写 `python-version-required.txt`（目标机 Python 版本要求，安装/升级脚本据此校验并快速失败）
 - Windows 包（默认 `--with-python`）下载 **CPython 官方安装器**放进包内，供 `Python <3.10` 的内网机
   离线并行安装（`WIN_PY_FULL_VER=3.13.x` 可指定补丁版本；构建机连不上 python.org 时自动跳过）
+- **`--self-contained`（Windows 裸机）**：把便携 CPython（python-build-standalone 的
+  `install_only_stripped`，**必须 stripped 版**，体积 20.9MB vs 44.9MB）+ Temurin JRE 17
+  **解压展开**到 `runtime/python`、`runtime/jre`（目标机无需解压工具），并写
+  `runtime/runtime-manifest.txt` 记录版本来源；此时自动跳过官方安装器避免重复
+- Windows 包还带 `mcp-dbtools-run.cmd`（启动器）+ `mcp-dbtools-service.cmd`（服务管理，
+  pm2 优先、否则计划任务）——**批处理必须 CRLF**（见 .gitattributes）
 - 组装：`dist/` + `wheels/` + `drivers/` + `config/` + `scripts/sql` + `scripts/encrypt_password.py`
   + `docs/` + `README-二次开发.md` + pm2 配置 + `install.sh` / `upgrade.sh`
 

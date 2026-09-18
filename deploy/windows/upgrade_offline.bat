@@ -93,6 +93,17 @@ if exist "%PKG_DIR%source" (
     echo   已更新 source 源码快照
 )
 if exist "%PKG_DIR%README-二次开发.md" copy /y "%PKG_DIR%README-二次开发.md" "%INSTALL_DIR%\" >nul
+REM 自包含运行时：新版带 runtime\ 时覆盖（便携 Python/JRE 版本更新）；
+REM 新版没带则【保留】旧 runtime\——venv 依赖它，删了服务就起不来
+if exist "%PKG_DIR%runtime" (
+    if exist "%INSTALL_DIR%\runtime" rmdir /s /q "%INSTALL_DIR%\runtime"
+    xcopy /e /i /y "%PKG_DIR%runtime" "%INSTALL_DIR%\runtime" >nul
+    echo   已更新 runtime 便携运行时
+)
+REM 服务管理脚本（计划任务方式）
+for %%f in (mcp-dbtools-run.cmd mcp-dbtools-service.cmd) do (
+    if exist "%PKG_DIR%%%f" copy /y "%PKG_DIR%%%f" "%INSTALL_DIR%\" >nul
+)
 if not exist "%INSTALL_DIR%\config" mkdir "%INSTALL_DIR%\config"
 copy /y "%PKG_DIR%config\datasources.json.example" "%INSTALL_DIR%\config\datasources.json.example" >nul
 copy /y "%PKG_DIR%requirements.txt" "%INSTALL_DIR%\requirements.txt" >nul
@@ -120,10 +131,16 @@ pm2 describe mcp-dbtools >nul 2>&1
 if %errorlevel%==0 (
     pm2 restart mcp-dbtools --update-env
     echo   已通过 pm2 重启
-) else (
-    echo   [提示] 未检测到 pm2 进程，请手动重启：
-    echo     %INSTALL_DIR%\.venv\Scripts\python -m mcp_dbtools --transport streamable-http
+    goto restart_done
 )
+schtasks /query /tn "mcp-dbtools" >nul 2>&1
+if %errorlevel%==0 (
+    call "%INSTALL_DIR%\mcp-dbtools-service.cmd" restart
+    goto restart_done
+)
+echo   [提示] 未检测到 pm2 进程或计划任务，请手动启动：
+echo     "%INSTALL_DIR%\mcp-dbtools-run.cmd"   或  mcp-dbtools-service.cmd install ^&^& start
+:restart_done
 
 echo.
 echo ============================================================

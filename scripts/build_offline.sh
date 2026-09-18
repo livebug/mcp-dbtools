@@ -11,6 +11,10 @@
 #                         内网存在低于目标版本的 Python（如系统自带 3.8）时，
 #                         可在内网离线安装 3.13（并行安装，不影响系统 Python）
 #     --no-python         不附带 Python 安装器（包体积减小约 29 MB）
+#     --self-contained    【裸机模式】包内直接展开便携运行时（Python + JRE 17），
+#                         目标机无需预装 Python / JDK / Node（pm2 也不再必需），
+#                         解压即用、免管理员、不写 PATH/注册表。
+#                         包体积约 74 MB（自动跳过官方安装器，避免重复）
 #
 # 产物（项目根目录下）:
 #   mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
@@ -35,20 +39,26 @@ ARCH="$(uname -m)"
 # 兼容旧用法: build_offline.sh [linux|windows|all]
 PLATFORM="linux"
 WITH_PYTHON="${WITH_PYTHON_INSTALLER:-1}"
+SELF_CONTAINED="${SELF_CONTAINED:-0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --platform) PLATFORM="${2:-}"; shift 2 ;;
     linux|windows|all) PLATFORM="$1"; shift ;;
     --with-python) WITH_PYTHON=1; shift ;;
     --no-python)   WITH_PYTHON=0; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
-    *) echo "未知参数: $1"; echo "用法: $0 [--platform linux|windows|all] [--with-python|--no-python]"; exit 1 ;;
+    --self-contained) SELF_CONTAINED=1; shift ;;
+    -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
+    *) echo "未知参数: $1"; echo "用法: $0 [--platform linux|windows|all] [--with-python|--no-python] [--self-contained]"; exit 1 ;;
   esac
 done
 case "$PLATFORM" in
   linux|windows|all) ;;
   *) echo "用法: $0 [--platform linux|windows|all]"; exit 1 ;;
 esac
+if [ "$SELF_CONTAINED" = "1" ] && [ "$PLATFORM" = "linux" ]; then
+  echo "[WARN] --self-contained 目前仅支持 Windows 包，已忽略该选项"
+  SELF_CONTAINED=0
+fi
 
 echo "==> 构建平台: $PLATFORM | Python $PY_VER | 架构 $ARCH"
 
@@ -129,6 +139,80 @@ fetch_python_installer() {
   fi
 }
 
+# 下载并【展开】Windows 自包含运行时：便携 CPython + Temurin JRE
+# 直接展开为 runtime/python、runtime/jre，目标机无需解压工具、无需安装、免管理员
+fetch_runtime_windows() {
+  local PKG="$1" PYVER="$2"
+  local RT="$PKG/runtime"
+  rm -rf "$RT"; mkdir -p "$RT"
+  local MANIFEST="$RT/runtime-manifest.txt"
+  {
+    echo "mcp-dbtools 自包含运行时清单（随包分发，供内网裸机使用）"
+    echo "生成时间: $(date -Iseconds)"
+  } > "$MANIFEST"
+
+  # ---------- 1) 便携 CPython（install_only_stripped：解压即用、含 pip/venv、自带 vcruntime） ----------
+  echo "==> 下载便携 CPython ${PYVER}（Windows x64，stripped）"
+  local PY_URL
+  PY_URL="$("$PY" - "$PYVER" <<'PYEOF'
+import json, re, sys, urllib.request
+
+ver = sys.argv[1]
+api = "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest"
+req = urllib.request.Request(api, headers={"User-Agent": "mcp-dbtools-build"})
+with urllib.request.urlopen(req, timeout=60) as resp:
+    data = json.load(resp)
+pat = re.compile(
+    rf"cpython-{re.escape(ver)}\.\d+\+.*-x86_64-pc-windows-msvc-install_only_stripped\.tar\.gz$"
+)
+for asset in data.get("assets", []):
+    if pat.search(asset["name"]):
+        print(asset["browser_download_url"])
+        break
+PYEOF
+)"
+  if [ -z "$PY_URL" ]; then
+    echo "    [WARN] 未找到便携 CPython ${PYVER}，跳过（自包含包将不完整）"
+  elif curl -fsSL --max-time 900 -o "$RT/python.tar.gz" "$PY_URL"; then
+    mkdir -p "$RT/python"
+    tar xzf "$RT/python.tar.gz" -C "$RT/python" --strip-components=1
+    rm -f "$RT/python.tar.gz"
+    if [ -x "$RT/python/python.exe" ] || [ -f "$RT/python/python.exe" ]; then
+      echo "    便携 Python: $(du -sm "$RT/python" | cut -f1) MB（含 python.exe / pythonw.exe / pip / venv）"
+      echo "portable-python: $(basename "$PY_URL")" >> "$MANIFEST"
+    else
+      echo "    [WARN] 便携 Python 解压后缺少 python.exe，已清理"
+      rm -rf "$RT/python"
+    fi
+  else
+    echo "    [WARN] 便携 CPython 下载失败: $PY_URL"
+    rm -rf "$RT/python.tar.gz"
+  fi
+
+  # ---------- 2) Temurin JRE（JDBC 需要 JVM；解压即用，设 JAVA_HOME 即可） ----------
+  echo "==> 下载 Eclipse Temurin JRE ${JRE_VERSION:-17}（Windows x64）"
+  local JRE_URL="https://api.adoptium.net/v3/binary/latest/${JRE_VERSION:-17}/ga/windows/x64/jre/hotspot/normal/eclipse?project=jdk"
+  if curl -fsSL --max-time 900 -o "$RT/jre.zip" "$JRE_URL"; then
+    "$PY" -m zipfile -e "$RT/jre.zip" "$RT/jre-tmp"
+    local JRE_TOP
+    JRE_TOP="$(find "$RT/jre-tmp" -maxdepth 1 -mindepth 1 -type d | head -1)"
+    if [ -n "$JRE_TOP" ] && [ -f "$JRE_TOP/bin/server/jvm.dll" ]; then
+      mv "$JRE_TOP" "$RT/jre"
+      rm -rf "$RT/jre-tmp" "$RT/jre.zip"
+      echo "    JRE: $(du -sm "$RT/jre" | cut -f1) MB（$(basename "$JRE_TOP")）"
+      echo "temurin-jre: $(basename "$JRE_TOP")" >> "$MANIFEST"
+    else
+      echo "    [WARN] JRE 解压结果异常（缺 bin/server/jvm.dll），已清理"
+      rm -rf "$RT/jre-tmp" "$RT/jre.zip"
+    fi
+  else
+    echo "    [WARN] JRE 下载失败，跳过（目标机需自行准备 JDK/JRE 11+）"
+    rm -f "$RT/jre.zip"
+  fi
+
+  echo "    运行时清单: $MANIFEST"
+}
+
 # ---------- Linux 包 ----------
 build_linux() {
   local PKG="offline/mcp-dbtools-offline-linux"
@@ -174,11 +258,16 @@ build_windows() {
   cp deploy/windows/ecosystem-windows.config.cjs "$PKG/ecosystem-windows.config.cjs"
   cp deploy/windows/install_offline.bat "$PKG/install_offline.bat"
   cp deploy/windows/upgrade_offline.bat "$PKG/upgrade_offline.bat"
+  cp deploy/windows/mcp-dbtools-run.cmd "$PKG/mcp-dbtools-run.cmd"
+  cp deploy/windows/mcp-dbtools-service.cmd "$PKG/mcp-dbtools-service.cmd"
   cp deploy/windows/README-windows.md "$PKG/README-windows.md"
   # 目标机 Python 版本要求（install/upgrade 脚本据此校验）
   echo "$WIN_PY_VER" > "$PKG/python-version-required.txt"
   rm -f "$PKG"/python-*-amd64.exe
-  if [ "$WITH_PYTHON" = "1" ]; then
+  if [ "$SELF_CONTAINED" = "1" ]; then
+    echo "    [自包含模式] 携带便携运行时（Python + JRE），目标机无需任何预装"
+    fetch_runtime_windows "$PKG" "$WIN_PY_VER"
+  elif [ "$WITH_PYTHON" = "1" ]; then
     fetch_python_installer "$PKG" "$WIN_PY_VER"
   else
     echo "    [跳过] 未附带 CPython 安装器（--with-python 可开启）"
@@ -205,4 +294,7 @@ echo "完成。离线包已生成，拷贝到内网后解压执行:"
 echo "  Linux  : tar xzf mcp-dbtools-offline-linux-${STAMP}.tar.gz && bash mcp-dbtools-offline-linux/install.sh"
 echo "  Windows: 解压 mcp-dbtools-offline-windows-${STAMP}.zip 后双击 install_offline.bat"
 echo "  二次开发: 源码在包内 source/，见 README-二次开发.md（内网可 pip install -e .）"
+if [ "$SELF_CONTAINED" = "1" ]; then
+  echo "  自包含包: 目标机无需 Python/JDK/Node，解压即用（运行 runtime/ 内便携 Python 与 JRE）"
+fi
 echo "  （构建机与目标机需同为对应平台 + 相同 Python 主版本）"

@@ -425,6 +425,8 @@ bash scripts/build_offline.sh --platform linux
 # 内含: 项目 wheel + 运行时/开发依赖 wheel + 完整源码快照 source/ + JDBC 驱动 + pm2 配置 + 安装/升级脚本
 # Windows 包默认附带 CPython 官方安装器（--no-python 可关闭，省约 29 MB）：
 #   bash scripts/build_offline.sh --platform windows
+# Windows 裸机（目标机无 Python/JDK/Node）自包含包：包内带便携 Python + JRE 17
+#   bash scripts/build_offline.sh --platform windows --self-contained
 ```
 
 > 构建机与内网机需**同为 Linux x86_64 + 相同 Python 主版本**（依赖含 manylinux 二进制 wheel，如 `jpype1`/`pydantic-core`）。

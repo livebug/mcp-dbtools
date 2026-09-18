@@ -2,7 +2,22 @@
 
 > 内网 Windows 机器离线部署（无外网）。本包已含全部依赖的 Windows wheel，无需联网。
 
-## 前置要求
+## 两种包形态
+
+| 形态 | 目标机前置 | 包体积 | 构建命令 |
+| --- | --- | --- | --- |
+| **轻量包**（默认） | 需 Python 3.13（64 位）+ JDK/JRE 11+ | ≈ 39 MB（含 Python 安装器） | `--platform windows` |
+| **自包含包** | **无需任何预装**（Python / JDK / Node 都不用） | ≈ 74 MB | `--platform windows --self-contained` |
+
+自包含包在包内直接展开好解压即用的运行时：
+
+- `runtime\python` —— 便携 CPython（含 pip / venv，自带 vcruntime，**免安装、免管理员、不写 PATH/注册表**）
+- `runtime\jre` —— Eclipse Temurin JRE 17（`mcp-dbtools-run.cmd` 会自动设为 `JAVA_HOME`）
+
+安装脚本**优先用系统运行时，缺失或版本不符时才回退到包内运行时**，所以同一个包在两类机器上都能用；
+服务托管同样自适应：**有 pm2 就用 pm2，没有就用 Windows 自带计划任务（不再强制 Node/pm2）**。
+
+## 前置要求（轻量包）
 
 | 组件 | 要求 |
 | --- | --- |
@@ -13,13 +28,22 @@
 > 包内 `python-version-required.txt` 记录要求的 Python 版本，`install_offline.bat` / `upgrade_offline.bat`
 > 会据此校验，版本不符会**直接报错**（而不是装到一半失败）。
 
-### 机器上只有 Python 3.8（或其它版本）怎么办？
+### 机器上只有 Python 3.8（或其它版本 / 什么都没装）怎么办？
 
 本项目依赖 **`mcp` SDK（全部版本均要求 Python >= 3.10）**，`pyproject.toml` 也声明
 `requires-python = ">=3.10"`，因此 **Python 3.8 环境无法安装、也无法运行**
-（`pip` 连依赖都解析不出来：`No matching distribution found for mcp`）。
+（`pip` 连依赖都解析不出来：`No matching distribution found for mcp`）。两种处理办法：
 
-处理办法是**在目标机上并行安装 Python 3.13**（不影响系统自带的 3.8）：
+**办法一：用自包含包（推荐，什么都不用装）**
+
+```
+bash scripts/build_offline.sh --platform windows --self-contained
+```
+
+目标机解压后直接双击 `install_offline.bat` —— 脚本自动改用包内便携 Python（3.13）建 venv，
+用包内 JRE 跑 JDBC，不碰系统里那个 3.8。
+
+**办法二：在目标机上并行安装 Python 3.13**（不影响系统自带的 3.8）
 
 ```
 1. 离线包内已附带 CPython 官方安装器（python-3.13.x-amd64.exe；构建时 --with-python，默认开启）
@@ -83,6 +107,25 @@ set MCP_DBTOOLS_CONFIG=%CD%\config\datasources.json
 
 完整说明见包内 `README-二次开发.md`（= `source\docs\二次开发指南.md`）。
 
+## 服务管理（计划任务 / pm2）
+
+安装完成后用 `mcp-dbtools-service.cmd` 管理服务（**先 cd 到安装目录**）：
+
+```bat
+mcp-dbtools-service.cmd install    :: 创建自启任务：管理员=开机自启(SYSTEM)；普通用户=登录自启
+mcp-dbtools-service.cmd start      :: 启动
+mcp-dbtools-service.cmd stop       :: 停止
+mcp-dbtools-service.cmd restart    :: 重启
+mcp-dbtools-service.cmd status     :: 任务状态 + 8000 端口监听情况
+mcp-dbtools-service.cmd logs       :: 跟踪 logs\app.log（Ctrl+C 退出）
+mcp-dbtools-service.cmd remove     :: 删除计划任务（不删安装目录与配置）
+```
+
+- 前台调试：直接运行 `mcp-dbtools-run.cmd`（会设置 `JAVA_HOME` 与工作目录后用 `python` 启动，日志输出到控制台）
+- **pm2 兼容**：若目标机已装 pm2 且由 pm2 管理着 `mcp-dbtools`，上述命令会自动委托给 pm2，
+  与原部署方式无缝共存（`pm2 logs mcp-dbtools` 等命令照旧可用）
+- 无管理员权限时只能创建“登录自启”任务；开机自启需以管理员运行 `install`
+
 ## 数据源配置（config/datasources.json）
 
 ```json
@@ -144,12 +187,17 @@ pm2 stop mcp-dbtools
 
 ```
 mcp-dbtools-offline-windows-*.zip 解压后:
-├── install_offline.bat        # 一键离线安装（建 venv + 装依赖 + 生成配置）
+├── install_offline.bat        # 一键离线安装（建 venv + 装依赖 + 生成配置 + 注册服务）
 ├── upgrade_offline.bat        # 离线升级（保留用户配置，重启服务）
+├── mcp-dbtools-run.cmd        # 服务启动器（设 JAVA_HOME / 工作目录，用 pythonw 后台运行）
+├── mcp-dbtools-service.cmd    # 服务管理（install/start/stop/restart/status/logs/remove）
 ├── requirements.txt
 ├── .env.example               # 环境变量示例（安装时生成 .env）
 ├── python-version-required.txt    # 要求的 Python 版本（安装/升级脚本据此校验）
-├── python-3.13.x-amd64.exe    # CPython 官方安装器（--with-python 时附带，供低版本机器离线安装）
+├── python-3.13.x-amd64.exe    # CPython 官方安装器（轻量包附，供低版本机器离线安装）
+├── runtime\                   # 【自包含包才有】便携运行时，解压即用免安装
+│   ├── python\               #   便携 CPython（含 pip / venv）
+│   └── jre\                  #   Temurin JRE 17（JDBC 需要）
 ├── README-windows.md          # 本说明
 ├── README-二次开发.md          # 内网二次开发指南
 ├── dist/                      # 项目 wheel
@@ -174,10 +222,13 @@ mcp-dbtools-offline-windows-*.zip 解压后:
 ## 重新生成 Windows 离线包（联网机器上执行）
 
 ```bash
-# 一键生成 Windows 离线包（zip，win_amd64 + Python 3.13 wheel，含 Python 安装器）
+# 轻量包（要求目标机有 Python 3.13 + JDK/JRE 11+；含官方 Python 安装器）
 bash scripts/build_offline.sh --platform windows
 
-# 不带 Python 安装器（包体积小约 29 MB）
+# 自包含包（目标机什么都不用装：包内带便携 Python + JRE 17）
+bash scripts/build_offline.sh --platform windows --self-contained
+
+# 不带 Python 安装器（轻量包减约 29 MB）
 bash scripts/build_offline.sh --platform windows --no-python
 
 # 或同时生成 Linux + Windows 两个包
