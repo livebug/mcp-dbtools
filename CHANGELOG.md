@@ -3,6 +3,20 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.3.0] - 2026-10-12
+
+### 变更
+
+- **JDBC 底座从 jaydebeapi/JPype 换成 open-dbclient Java 桥子进程**：新增
+  `src/mcp_dbtools/bridge.py`（NDJSON-RPC 客户端，spawn `bridge.jar`），`jdbc.py` 全部走桥 ——
+  元数据走 `DatabaseMetaData` 能力探测（**删除全部方言 SQL**，新增数据库不再改核心代码）、
+  查询走 `query.execute` 分页、事务走 `connection.begin/commit/rollbackTransaction`。
+  服务端策略（写操作拦截、行数上限、熔断、审计）保持不变。
+- **运行要求升级**：JRE/JDK 由 11+ 升为 **17+**（桥 jar 目标 Java 17）。
+- **新增配置**：`MCP_DBTOOLS_BRIDGE_JAR`（默认 `bridge.jar`）、`MCP_DBTOOLS_JAVA`、
+  `MCP_DBTOOLS_BRIDGE_TIMEOUT`。
+- **依赖精简**：移除 `jaydebeapi`、`jpype1`。
+
 ## [1.2.1] - 2026-09-18
 
 ### 安全

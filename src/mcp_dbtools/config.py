@@ -43,7 +43,7 @@ class DataSource:
     jars: list[str] = field(default_factory=list)
     description: str = ""
     properties: dict[str, str] = field(default_factory=dict)
-    # 额外透传给 jaydebeapi.connect 的命名参数（如 fetchsize）
+    # 已废弃：旧版透传给 jaydebeapi.connect 的命名参数，桥后端不再使用，仅为兼容旧配置保留
     connect_kwargs: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -152,6 +152,10 @@ class Settings:
     log_file: str | None = "logs/app.log"  # 应用日志文件路径，空则仅输出控制台
     log_max_bytes: int = 10 * 1024 * 1024  # 单日志文件最大字节数（超过轮转 .1/.2/...）
     log_backup_count: int = 5              # 日志轮转保留备份份数
+    # ---- Java 桥 ----
+    bridge_jar: str = "bridge.jar"          # open-dbclient Java 桥 jar 路径
+    java: str = "java"                      # Java 可执行文件（JRE/JDK 17+）
+    bridge_timeout: float = 120.0           # 桥请求默认超时（秒）
     datasources: list[DataSource] = field(default_factory=list)
 
 
@@ -211,6 +215,10 @@ def load_settings() -> Settings:
         log_file=env.get("MCP_DBTOOLS_LOG_FILE", "logs/app.log") or None,
         log_max_bytes=int(env.get("MCP_DBTOOLS_LOG_MAX_BYTES", str(10 * 1024 * 1024))),
         log_backup_count=int(env.get("MCP_DBTOOLS_LOG_BACKUP_COUNT", "5")),
+        # Java 桥
+        bridge_jar=env.get("MCP_DBTOOLS_BRIDGE_JAR", "bridge.jar"),
+        java=env.get("MCP_DBTOOLS_JAVA", "java"),
+        bridge_timeout=float(env.get("MCP_DBTOOLS_BRIDGE_TIMEOUT", "120")),
     )
 
     raw = _load_json(cfg.config_path)

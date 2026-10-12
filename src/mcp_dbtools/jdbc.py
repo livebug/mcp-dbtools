@@ -1,10 +1,11 @@
-"""JDBC 连接管理层。
+"""数据库访问层：通过 open-dbclient Java 桥（NDJSON-RPC）连接任意 JDBC 数据源。
 
-基于 jaydebeapi（JPype 桥接 JVM 与 JDBC），负责：
-- JDBC 驱动 jar 解析（drivers/ 目录）；
-- 每个数据源一个常驻连接 + 失败自动重连（线程安全）；
-- SQL 查询执行与结果 JSON 化；
-- 按方言（openGauss / TDH-Hive / 通用）提供元数据查询。
+与旧版（jaydebeapi/JPype 内嵌 JVM）相比，本模块不再持有任何数据库方言 SQL：
+元数据一律走桥的 ``DatabaseMetaData`` 能力探测，查询走 ``query.execute`` 分页，
+事务走 ``connection.begin/commit/rollbackTransaction``。方言适配这件事完全交给
+JDBC 驱动自己回答，控制面只做策略（写操作拦截、行数上限、熔断、审计）。
+
+对外 API 保持与 tools.py / server.py / export.py 的既有契约不变。
 """
 
 from __future__ import annotations
@@ -15,1343 +16,60 @@ import os
 import re
 import threading
 import time as _time
-from collections import deque
-from contextlib import contextmanager
-from datetime import date, datetime, time
-from decimal import Decimal
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
-import jaydebeapi
-import jpype
-
+from .bridge import BridgeClient, BridgeError, BridgeNotRunningError
 from .config import DataSource, Settings
 
 logger = logging.getLogger(__name__)
 
-# 通用方言（基于 information_schema），openGauss / GaussDB / PostgreSQL 均可使用
-_PG_SYSTEM_SCHEMAS = "('pg_catalog','information_schema','db4ai','dbe_perf','dbe_pldeveloper','snapshot')"
-_PG_SCHEMAS_SQL = "SELECT schema_name FROM information_schema.schemata ORDER BY 1"
-_PG_TABLES_SQL = (
-    "SELECT table_schema, table_name, table_type "
-    "FROM information_schema.tables "
-    f"WHERE table_schema NOT IN {_PG_SYSTEM_SCHEMAS} "
-    "ORDER BY 1, 2"
-)
-_PG_COLUMNS_SQL = (
-    "SELECT column_name, data_type, is_nullable, column_default "
-    "FROM information_schema.columns "
-    "WHERE table_schema = ? AND table_name = ? "
-    "ORDER BY ordinal_position"
-)
+_DB2_PING_SQL = "SELECT 1 FROM SYSIBM.SYSDUMMY1"
+_PING_SQL = "SELECT 1"
 
-# TDH / Hive 方言
-_HIVE_SCHEMAS_SQL = "SHOW DATABASES"
-_HIVE_TABLES_SQL = "SHOW TABLES"  # 当前库；也支持 SHOW TABLES IN {schema}
-_HIVE_DESCRIBE_SQL = "DESCRIBE {table}"  # 也支持 DESCRIBE {schema}.{table}
-
-# DB2 方言（SYSCAT 目录，排除系统 schema）
-_DB2_SYSTEM_SCHEMAS = "('SYSIBM','SYSCAT','SYSSTAT','SYSIBMADM','SYSTOOLS','SYSPUBLIC','SYSFUN','SYSPROC','SYSIBMTS')"
-_DB2_SCHEMAS_SQL = (
-    f"SELECT schemaname FROM syscat.schemata "
-    f"WHERE schemaname NOT IN {_DB2_SYSTEM_SCHEMAS} ORDER BY 1"
-)
-_DB2_TABLES_SQL = (
-    f"SELECT tabschema, tabname, type FROM syscat.tables "
-    f"WHERE tabschema NOT IN {_DB2_SYSTEM_SCHEMAS} ORDER BY tabname"
-)
-_DB2_COLUMNS_SQL = (
-    "SELECT colname, typename, length, scale, nulls, remarks "
-    "FROM syscat.columns WHERE tabschema = ? AND tabname = ? ORDER BY colno"
-)
-
-# MySQL 方言（information_schema，排除系统库）
-_MYSQL_SYSTEM_SCHEMAS = "('information_schema','mysql','performance_schema','sys')"
-_MYSQL_SCHEMAS_SQL = (
-    "SELECT schema_name FROM information_schema.schemata "
-    f"WHERE schema_name NOT IN {_MYSQL_SYSTEM_SCHEMAS} ORDER BY 1"
-)
-_MYSQL_TABLES_SQL = (
-    "SELECT table_schema, table_name, table_type "
-    "FROM information_schema.tables "
-    f"WHERE table_schema NOT IN {_MYSQL_SYSTEM_SCHEMAS} "
-    "ORDER BY 1, 2"
-)
-_MYSQL_COLUMNS_SQL = (
-    "SELECT column_name, data_type, is_nullable, column_default, column_comment "
-    "FROM information_schema.columns "
-    "WHERE table_schema = ? AND table_name = ? "
-    "ORDER BY ordinal_position"
-)
+# 桥错误码 → 控制面用户可读中文（桥内部消息是英文，这里做一层本地化）
+_BRIDGE_ERROR_MESSAGES = {
+    "TRANSACTION_ACTIVE": "数据源已有活动事务，请先 commit 或 rollback",
+    "TRANSACTION_NOT_FOUND": "无活动事务，请先 begin_transaction",
+    "TRANSACTION_TIMEOUT": "事务已超时并自动回滚",
+    "CONNECTION_NOT_FOUND": "连接未打开",
+    "UNSUPPORTED": "驱动不支持该操作",
+    "DRIVER_NOT_FOUND": "未找到 JDBC 驱动",
+    "DRIVER_LOAD_FAILED": "JDBC 驱动加载失败",
+    "CONNECTION_FAILED": "数据库连接失败",
+}
 
 
 class JDBCError(Exception):
-    """JDBC 操作异常。"""
-
-
-def _jsonable(value: Any) -> Any:
-    """将 JDBC 返回值转换为可 JSON 序列化的 Python 对象。"""
-    if value is None:
-        return None
-    # 注意使用 isinstance：JPype 的 JDouble/JInt 等是 float/int 子类
-    if isinstance(value, bool):
-        return bool(value)
-    if isinstance(value, int):
-        return int(value)
-    if isinstance(value, float):
-        return float(value)
-    if isinstance(value, str):
-        return str(value)
-    if isinstance(value, (bytes, bytearray)):
-        try:
-            return value.decode("utf-8")
-        except UnicodeDecodeError:
-            return "0x" + value.hex()
-    if isinstance(value, Decimal):
-        return _decimal_to_number(value)
-    if isinstance(value, (datetime, date, time)):
-        return value.isoformat()
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-
-    # Java 对象（JPype 包装），按模块前缀识别
-    t = type(value)
-    if t.__module__.startswith(("java.", "jpype.")):
-        fq = f"{t.__module__}.{t.__name__}"
-        if "BigDecimal" in fq:
-            try:
-                return _java_bigdecimal(value)
-            except Exception:
-                return str(value)
-        if hasattr(value, "doubleValue"):
-            try:
-                d = float(value.doubleValue())
-                if hasattr(value, "longValue"):
-                    try:
-                        lv = value.longValue()
-                        if d == float(lv):
-                            return int(lv)
-                    except Exception:
-                        pass
-                return d
-            except Exception:
-                pass
-        if hasattr(value, "toString"):
-            try:
-                return str(value.toString())
-            except Exception:
-                pass
-    return str(value)
-
-
-def _decimal_to_number(value: Decimal) -> Any:
-    try:
-        if value == value.to_integral_value():
-            return int(value)
-        return float(value)
-    except (OverflowError, ValueError):
-        return str(value)
-
-
-def _java_bigdecimal(value: Any) -> Any:
-    try:
-        if value.scale() <= 0:
-            return int(value)
-        return float(value)
-    except Exception:
-        return str(value)
-
-
-def _rows_to_jsonable(rows: list[tuple]) -> list[list[Any]]:
-    return [[_jsonable(v) for v in row] for row in rows]
-
-
-class JDBCManager:
-    """管理到各数据源的 JDBC 连接。"""
-
-    def __init__(self, settings: Settings):
-        self.settings = settings
-        self.drivers_dir = Path(settings.drivers_dir)
-        self._jvm_lock = threading.Lock()
-        self._locks: dict[str, threading.RLock] = {}
-        self._jar_cache: dict[str, list[str]] = {}
-        # 元数据结果缓存：key -> (expire_at, result)
-        self._meta_cache: dict[Any, tuple[float, Any]] = {}
-        self._meta_cache_lock = threading.RLock()
-        self._meta_cache_hits = 0
-        self._meta_cache_misses = 0
-        # 连接池：每数据源最多 pool_size 个空闲连接
-        self._pools: dict[str, deque] = {}
-        self._pool_size = max(1, settings.pool_size)
-        # 熔断状态：name -> {failures, open_until, half_open}
-        self._circuits: dict[str, dict[str, Any]] = {}
-        # 每个数据源的连接/执行统计（监控用）
-        self._ds_stats: dict[str, dict[str, Any]] = {}
-        # 显式事务：name -> {conn, begun_at, auto_commit}
-        self._tx_conns: dict[str, dict[str, Any]] = {}
-        # 后台探活/自动重连
-        self._health_thread: threading.Thread | None = None
-        self._health_stop = threading.Event()
-
-    # ------------------------------------------------------------------
-    # 监控统计
-    # ------------------------------------------------------------------
-    def _stats(self, name: str) -> dict[str, Any]:
-        if name not in self._ds_stats:
-            self._ds_stats[name] = {
-                "name": name,
-                "connected": False,
-                "connected_at": None,
-                "last_active": None,
-                "query_count": 0,
-                "error_count": 0,
-                "rows_returned": 0,
-                "total_query_time_ms": 0.0,
-                "avg_query_time_ms": 0.0,
-                "last_error": None,
-                "last_health": None,
-                "health_latency_ms": None,
-            }
-        return self._ds_stats[name]
-
-    def _touch(self, name: str, *, connected: bool | None = None) -> dict[str, Any]:
-        st = self._stats(name)
-        st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
-        if connected is not None:
-            st["connected"] = connected
-            if connected:
-                st["connected_at"] = st["last_active"]
-        return st
-
-    def ds_status(self, name: str) -> dict[str, Any]:
-        """单个数据源的连接/执行状态。"""
-        with self._lock_for(name):
-            st = dict(self._stats(name))
-        qc = st["query_count"]
-        st["avg_query_time_ms"] = round(st["total_query_time_ms"] / qc, 2) if qc else 0.0
-        return st
-
-    def all_status(self) -> list[dict[str, Any]]:
-        """所有数据源的连接/执行状态。"""
-        return [self.ds_status(ds.name) for ds in self.settings.datasources]
-
-    # ------------------------------------------------------------------
-    # 连接管理
-    # ------------------------------------------------------------------
-    def _jar_paths(self, ds: DataSource) -> list[str]:
-        if ds.name in self._jar_cache:
-            return self._jar_cache[ds.name]
-        paths: list[str] = []
-        for jar in ds.jars:
-            p = self.drivers_dir / jar
-            if p.is_file():
-                paths.append(str(p.resolve()))
-            else:
-                where = self._safe_path_display(self.drivers_dir) or "drivers"
-                raise JDBCError(
-                    f"数据源 {ds.name} 缺少 JDBC 驱动: {jar}。"
-                    f"请将其放入驱动目录 {where}（可运行 scripts/download_drivers.py）"
-                )
-        self._jar_cache[ds.name] = paths
-        return paths
-
-    def _lock_for(self, name: str) -> threading.RLock:
-        if name not in self._locks:
-            self._locks[name] = threading.RLock()
-        return self._locks[name]
-
-    def _all_jar_paths(self) -> list[str]:
-        """收集全部数据源的驱动 jar 并去重（缺失的仅告警跳过，连接时仍会严格报错）。"""
-        seen: set[str] = set()
-        all_paths: list[str] = []
-        for ds in self.settings.datasources:
-            try:
-                for p in self._jar_paths(ds):
-                    if p not in seen:
-                        seen.add(p)
-                        all_paths.append(p)
-            except JDBCError as exc:
-                logger.warning("跳过缺失驱动（不影响其他数据源）: %s", exc)
-        return all_paths
-
-    def _ensure_jvm(self) -> None:
-        """确保 JVM 已启动，且 classpath 包含本实例所需的全部驱动 jar。
-
-        JPype 一个进程只允许一个 JVM：首个实例启动时合并全部数据源 jar；
-        若 JVM 已由其他实例启动（如测试多 manager 场景），用 addClassPath
-        运行时补齐本实例缺失的驱动 jar，避免驱动类找不到。
-        """
-        with self._jvm_lock:
-            if not jpype.isJVMStarted():
-                jars = self._all_jar_paths()
-                logger.info("启动 JVM（classpath 合并 %d 个驱动 jar）", len(jars))
-                try:
-                    if jars:
-                        jpype.startJVM(classpath=jars)
-                    else:
-                        jpype.startJVM()
-                except Exception as exc:  # noqa: BLE001
-                    raise JDBCError(
-                        f"启动 JVM 失败: {exc}（JPype 1.5+ 需要 JDK 11+，请安装 JRE/JDK 11 及以上版本）"
-                    ) from exc
-                return
-            # JVM 已由其他实例启动：补齐本实例所需但缺失的驱动 jar
-            current = set(jpype.getClassPath())
-            for p in self._all_jar_paths():
-                if p not in current:
-                    logger.info("运行时追加驱动 jar 到 classpath: %s", p)
-                    jpype.addClassPath(p)
-
-    def _new_connection(self, ds: DataSource) -> jaydebeapi.Connection:
-        jars = self._jar_paths(ds)
-        if not ds.driver_class:
-            raise JDBCError(f"数据源 {ds.name} 未配置 driver_class")
-        self._ensure_jvm()
-        logger.info("连接数据源 %s (%s)", ds.name, ds.type)
-        try:
-            conn = jaydebeapi.connect(
-                ds.driver_class,
-                ds.jdbc_url,
-                [ds.username, ds.password] if ds.username is not None else None,
-                jars,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise JDBCError(f"连接数据源 {ds.name} 失败: {exc}") from exc
-        conn.jconn.setAutoCommit(True)
-        return conn
-
-    def _acquire(self, ds: DataSource) -> jaydebeapi.Connection:
-        """从连接池获取一个可用连接（无则新建）。"""
-        with self._lock_for(ds.name):
-            pool = self._pools.get(ds.name) or deque()
-            while pool:
-                conn = pool.popleft()
-                if self._is_alive(conn, self._ping_sql(ds)):
-                    self._touch(ds.name, connected=True)
-                    return conn
-                try:
-                    conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
-            conn = self._new_connection(ds)
-            self._touch(ds.name, connected=True)
-            return conn
-
-    def _release(self, ds: DataSource, conn: jaydebeapi.Connection) -> None:
-        """归还连接到连接池（池满则关闭）。"""
-        with self._lock_for(ds.name):
-            pool = self._pools.setdefault(ds.name, deque())
-            if len(pool) < self._pool_size:
-                pool.append(conn)
-            else:
-                try:
-                    conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
-
-    @staticmethod
-    def _ping_sql(ds: DataSource) -> str:
-        """按方言返回连接探测 SQL。DB2 不允许无 FROM 的 SELECT，需 SYSIBM.SYSDUMMY1。"""
-        if ds.type == "db2":
-            return "SELECT 1 FROM SYSIBM.SYSDUMMY1"
-        return "SELECT 1"
-
-    @staticmethod
-    def _is_alive(conn: jaydebeapi.Connection, ping_sql: str = "SELECT 1") -> bool:
-        try:
-            cur = conn.cursor()
-            try:
-                cur.execute(ping_sql)
-                cur.fetchall()
-            finally:
-                cur.close()
-            return True
-        except Exception:  # noqa: BLE001
-            return False
-
-    @contextmanager
-    def cursor(self, ds: DataSource) -> Iterator[Any]:
-        """获取数据源游标（连接池获取/归还）。"""
-        conn = self._acquire(ds)
-        cur = conn.cursor()
-        try:
-            yield cur
-        finally:
-            try:
-                cur.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._release(ds, conn)
-
-    # ------------------------------------------------------------------
-    # 健康检查 / 自动重连
-    # ------------------------------------------------------------------
-    def health(self, ds: DataSource, deep: bool = True) -> dict[str, Any]:
-        """数据源健康检查：真实执行 SELECT 1 探测连接。
-
-        deep=False 时优先返回缓存状态（不触发数据库调用）；
-        但若从未探测过（last_health 为空）会做一次真实探测，保证首次结果可信。
-        成功后自动重连（连接池取出的坏连接会被丢弃并新建）。
-        """
-        st = self._stats(ds.name)
-        if not deep and st.get("last_health") is not None:
-            with self._lock_for(ds.name):
-                return {
-                    "datasource": ds.name,
-                    "ok": bool(st["connected"]),
-                    "latency_ms": st.get("health_latency_ms"),
-                    "last_health": st.get("last_health"),
-                    "error": st.get("last_error"),
-                }
-        self._check_circuit(ds.name)
-        t0 = _time.monotonic()
-        try:
-            conn = self._acquire(ds)
-            try:
-                alive = self._is_alive(conn, self._ping_sql(ds))
-            finally:
-                self._release(ds, conn)
-        except JDBCError as exc:
-            alive, err = False, str(exc)
-        except Exception as exc:  # noqa: BLE001
-            alive, err = False, str(exc)
-        latency_ms = round((_time.monotonic() - t0) * 1000.0, 2)
-        with self._lock_for(ds.name):
-            st["last_health"] = datetime.now().isoformat(timespec="milliseconds")
-            st["health_latency_ms"] = latency_ms
-            st["connected"] = alive
-            if alive:
-                st["last_error"] = None
-                self._record_success(ds.name)
-            else:
-                st["last_error"] = err
-        return {
-            "datasource": ds.name,
-            "ok": alive,
-            "latency_ms": latency_ms,
-            "last_health": st["last_health"],
-            "error": None if alive else err,
-        }
-
-    def start_health_checker(self, interval: float | None = None) -> None:
-        """启动后台探活/自动重连线程（daemon），定期对每个数据源做 SELECT 1 探测。
-
-        探测失败会更新状态并在下次请求时通过 _acquire 自动重连。
-        """
-        if self._health_thread is not None and self._health_thread.is_alive():
-            return
-        interval = interval or max(5, self.settings.health_check_interval)
-        self._health_stop.clear()
-
-        def _loop() -> None:
-            while not self._health_stop.wait(interval):
-                for ds in list(self.settings.datasources):
-                    try:
-                        self.health(ds, deep=True)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("健康检查失败 %s: %s", ds.name, exc)
-
-        self._health_thread = threading.Thread(
-            target=_loop, name="ds-health-checker", daemon=True
-        )
-        self._health_thread.start()
-
-    def stop_health_checker(self) -> None:
-        self._health_stop.set()
-        if self._health_thread is not None:
-            try:
-                self._health_thread.join(timeout=2.0)
-            except RuntimeError:
-                pass
-
-    # ------------------------------------------------------------------
-    # 熔断
-    # ------------------------------------------------------------------
-    def _check_circuit(self, name: str) -> None:
-        c = self._circuits.get(name)
-        if not c:
-            return
-        now = _time.time()
-        if c["open_until"] and now < c["open_until"]:
-            raise JDBCError(
-                f"数据源 {name} 处于熔断状态（连续失败 {c['failures']} 次），"
-                f"请 {int(c['open_until'] - now) + 1}s 后重试"
-            )
-        if c["open_until"] and now >= c["open_until"]:
-            c["open_until"] = 0.0
-            c["half_open"] = True  # 半开：放行一次试探
-
-    def _record_success(self, name: str) -> None:
-        c = self._circuits.setdefault(name, {"failures": 0, "open_until": 0.0, "half_open": False})
-        c["failures"] = 0
-        c["half_open"] = False
-        c["open_until"] = 0.0
-
-    def _record_failure(self, name: str) -> None:
-        c = self._circuits.setdefault(name, {"failures": 0, "open_until": 0.0, "half_open": False})
-        c["failures"] += 1
-        if c["failures"] >= self.settings.circuit_fail_threshold:
-            c["open_until"] = _time.time() + self.settings.circuit_cooldown
-            c["half_open"] = False
-
-    def circuit_status(self, name: str) -> dict[str, Any]:
-        """查询数据源熔断状态（监控用）。"""
-        c = self._circuits.get(name)
-        if not c:
-            return {"name": name, "open": False, "failures": 0}
-        now = _time.time()
-        return {
-            "name": name,
-            "open": bool(c["open_until"] and now < c["open_until"]),
-            "failures": c["failures"],
-            "half_open": c.get("half_open", False),
-            "cooldown_left_seconds": max(0, int(c["open_until"] - now)) if c["open_until"] else 0,
-        }
-
-    # ------------------------------------------------------------------
-    # 查询
-    # ------------------------------------------------------------------
-    def execute_query(
-        self, ds: DataSource, sql: str, limit: int | None = None, confirm: bool = False
-    ) -> dict[str, Any]:
-        """执行 SQL，返回 {columns, rows, row_count, truncated}。
-
-        - 写操作（DELETE/UPDATE/INSERT/DROP 等）默认拦截，需 confirm=True 才执行；
-        - limit 上限受 max_rows_limit 限制，默认返回 max_rows 条（防一次性拉大数据量）。
-        """
-        limit = limit if limit is not None else self.settings.max_rows
-        limit = min(max(1, limit), self.settings.max_rows_limit)
-        if not sql or not sql.strip():
-            raise JDBCError("SQL 不能为空")
-        if _sql_kind(sql) == "write" and not confirm:
-            raise JDBCError(
-                "检测到写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
-                "如确认执行请传 confirm=true（将记录审计）"
-            )
-        self._check_circuit(ds.name)
-        t0 = _time.monotonic()
-        # 将 limit 应用到内部以便批量抓取（LIMIT 语法差异大，故仅做客户端截断）
-        try:
-            with self.cursor(ds) as cur:
-                cur.execute(sql)
-                cols = [_jsonable(d[0]) for d in (cur.description or [])]
-                rows: list[tuple] = []
-                truncated = False
-                if cur.description:  # 无结果集的语句（如 INSERT/DELETE）无需抓取
-                    while True:
-                        try:
-                            batch = cur.fetchmany(500)
-                        except Exception:  # noqa: BLE001  DB2 取完最后一行后再 fetch 会抛 "result set is closed"
-                            if rows:
-                                break
-                            raise
-                        if not batch:
-                            break
-                        rows.extend(batch)
-                        if len(rows) >= limit:
-                            rows = rows[:limit]
-                            truncated = True
-                            break
-                        if len(batch) < 500:  # 已取到底，避免多余 fetch 触发部分驱动关闭结果集
-                            break
-            self._record_success(ds.name)
-        except JDBCError:
-            self._record_failure(ds.name)
-            with self._lock_for(ds.name):
-                st = self._stats(ds.name)
-                st["error_count"] += 1
-            raise
-        except Exception as exc:  # noqa: BLE001
-            self._record_failure(ds.name)
-            with self._lock_for(ds.name):
-                st = self._stats(ds.name)
-                st["error_count"] += 1
-            raise JDBCError(f"执行 SQL 失败 ({ds.name}): {exc}") from exc
-        cost_ms = (_time.monotonic() - t0) * 1000.0
-        with self._lock_for(ds.name):
-            st = self._stats(ds.name)
-            st["query_count"] += 1
-            st["rows_returned"] += len(rows)
-            st["total_query_time_ms"] += cost_ms
-            st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
-        return {
-            "datasource": ds.name,
-            "columns": cols,
-            "rows": _rows_to_jsonable(rows),
-            "row_count": len(rows),
-            "truncated": truncated,
-            "execution_time_ms": round(cost_ms, 2),
-            "max_allowed": self.settings.max_rows_limit,
-        }
-
-    # ------------------------------------------------------------------
-    # 元数据
-    # ------------------------------------------------------------------
-    def _cached_meta(self, key: Any, ttl: int | None, producer):
-        """带 TTL 的元数据结果缓存（线程安全）。
-
-        key 须可哈希（如 tuple）；ttl<=0 时不做缓存直接调用 producer。
-        """
-        ttl = self.settings.meta_cache_ttl if ttl is None else ttl
-        if ttl <= 0:
-            return producer()
-        now = _time.monotonic()
-        with self._meta_cache_lock:
-            hit = self._meta_cache.get(key)
-            if hit and hit[0] > now:
-                self._meta_cache_hits += 1
-                return hit[1]
-            self._meta_cache_misses += 1
-        result = producer()
-        with self._meta_cache_lock:
-            self._meta_cache[key] = (now + ttl, result)
-            if len(self._meta_cache) > self.settings.meta_cache_max_items:
-                # 超过上限：清掉最旧的（简单策略：保留最近 max_items//2 条）
-                expired = sorted(
-                    self._meta_cache.items(), key=lambda kv: kv[1][0]
-                )
-                for k, _ in expired[: len(self._meta_cache) - self.settings.meta_cache_max_items // 2]:
-                    self._meta_cache.pop(k, None)
-        return result
-
-    def meta_cache_stats(self) -> dict[str, Any]:
-        with self._meta_cache_lock:
-            return {
-                "items": len(self._meta_cache),
-                "hits": self._meta_cache_hits,
-                "misses": self._meta_cache_misses,
-            }
-
-    def test_connection(self, ds: DataSource) -> dict[str, Any]:
-        """测试连接并返回数据库产品信息。"""
-        self._check_circuit(ds.name)
-        conn = self._acquire(ds)
-        try:
-            meta = conn.jconn.getMetaData()
-            product = str(meta.getDatabaseProductName())
-            version = str(meta.getDatabaseProductVersion())
-            self._record_success(ds.name)
-        except Exception as exc:  # noqa: BLE001
-            self._record_failure(ds.name)
-            logger.warning("读取数据库元数据失败: %s", exc)
-            product, version = ds.type, "unknown"
-        finally:
-            self._release(ds, conn)
-        return {
-            "datasource": ds.name,
-            "ok": True,
-            "product": product,
-            "version": version,
-        }
-
-    def list_schemas(self, ds: DataSource) -> list[str]:
-        return self._cached_meta(("schemas", ds.name), None, lambda: self._list_schemas_uncached(ds))
-
-    def _list_schemas_uncached(self, ds: DataSource) -> list[str]:
-        if ds.type in ("tdh", "hive", "inceptor"):
-            sql = _HIVE_SCHEMAS_SQL
-        elif ds.type == "db2":
-            sql = _DB2_SCHEMAS_SQL
-        elif ds.type == "mysql":
-            sql = _MYSQL_SCHEMAS_SQL
-        else:
-            sql = _PG_SCHEMAS_SQL
-        with self.cursor(ds) as cur:
-            cur.execute(sql)
-            return [str(r[0]) for r in cur.fetchall() if r]
-
-    def list_tables(
-        self, ds: DataSource, schema: str | None = None, search: str | None = None
-    ) -> list[dict[str, str]]:
-        key = ("tables", ds.name, schema, search)
-        return self._cached_meta(
-            key, None, lambda: self._list_tables_uncached(ds, schema, search)
-        )
-
-    def _list_tables_uncached(
-        self, ds: DataSource, schema: str | None = None, search: str | None = None
-    ) -> list[dict[str, str]]:
-        if ds.type in ("tdh", "hive", "inceptor"):
-            sql = (
-                f"SHOW TABLES IN {_quote(schema)}" if schema else _HIVE_TABLES_SQL
-            )
-            with self.cursor(ds) as cur:
-                cur.execute(sql)
-                rows = cur.fetchall()
-            tables = []
-            for r in rows:
-                table = str(r[0])
-                if search and search.lower() not in table.lower():
-                    continue
-                tables.append({"schema": schema or "", "table": table})
-            return tables
-
-        # DB2 方言（SYSCAT）
-        if ds.type == "db2":
-            sql = _DB2_TABLES_SQL
-            params: list[Any] = []
-            if schema:
-                sql = (
-                    "SELECT tabschema, tabname, type FROM syscat.tables "
-                    "WHERE tabschema = ? ORDER BY tabname"
-                )
-                params.append(schema)
-            with self.cursor(ds) as cur:
-                cur.execute(sql, params)
-                rows = cur.fetchall()
-            tables = []
-            for r in rows:
-                s, t, tt = (str(r[0]), str(r[1]), str(r[2] if len(r) > 2 else ""))
-                if search and search.lower() not in t.lower():
-                    continue
-                tables.append({"schema": s, "table": t, "type": tt})
-            return tables
-
-        # MySQL 方言（information_schema，排除系统库）
-        if ds.type == "mysql":
-            sql = _MYSQL_TABLES_SQL
-            params: list[Any] = []
-            if schema:
-                sql = (
-                    "SELECT table_schema, table_name, table_type "
-                    "FROM information_schema.tables "
-                    f"WHERE table_schema = ? AND table_schema NOT IN {_MYSQL_SYSTEM_SCHEMAS} "
-                    "ORDER BY 2"
-                )
-                params.append(schema)
-            with self.cursor(ds) as cur:
-                cur.execute(sql, params)
-                rows = cur.fetchall()
-            tables = []
-            for r in rows:
-                s, t, tt = (str(r[0]), str(r[1]), str(r[2] if len(r) > 2 else ""))
-                if search and search.lower() not in t.lower():
-                    continue
-                tables.append({"schema": s, "table": t, "type": tt})
-            return tables
-
-        # 通用 / openGauss 方言
-        sql = _PG_TABLES_SQL
-        params: list[Any] = []
-        if schema:
-            sql = (
-                "SELECT table_schema, table_name, table_type "
-                "FROM information_schema.tables "
-                f"WHERE table_schema = ? AND table_schema NOT IN {_PG_SYSTEM_SCHEMAS} "
-                "ORDER BY 2"
-            )
-            params.append(schema)
-        with self.cursor(ds) as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
-        tables = []
-        for r in rows:
-            s, t, tt = (str(r[0]), str(r[1]), str(r[2] if len(r) > 2 else ""))
-            if search and search.lower() not in t.lower():
-                continue
-            tables.append({"schema": s, "table": t, "type": tt})
-        return tables
-
-    def describe_table(
-        self, ds: DataSource, table: str, schema: str | None = None
-    ) -> list[dict[str, str]]:
-        key = ("describe", ds.name, table, schema)
-        return self._cached_meta(
-            key, None, lambda: self._describe_table_uncached(ds, table, schema)
-        )
-
-    def _describe_table_uncached(
-        self, ds: DataSource, table: str, schema: str | None = None
-    ) -> list[dict[str, str]]:
-        if ds.type in ("tdh", "hive", "inceptor"):
-            target = f"{_quote(schema)}.{_quote(table)}" if schema else _quote(table)
-            with self.cursor(ds) as cur:
-                cur.execute(_HIVE_DESCRIBE_SQL.format(table=target))
-                rows = cur.fetchall()
-            cols = []
-            for r in rows:
-                if not r or not str(r[0]).strip():
-                    continue
-                parts = [str(v) for v in r if v is not None]
-                cols.append(
-                    {
-                        "column": parts[0],
-                        "type": parts[1] if len(parts) > 1 else "",
-                        "comment": parts[2] if len(parts) > 2 else "",
-                    }
-                )
-            return cols
-
-        # DB2 方言（SYSCAT.COLUMNS）
-        if ds.type == "db2":
-            if not schema:
-                schema = self._guess_schema(ds, table)
-            with self.cursor(ds) as cur:
-                cur.execute(_DB2_COLUMNS_SQL, [schema, table])
-                rows = cur.fetchall()
-            cols = []
-            for r in rows:
-                dtype = str(r[1])
-                if len(r) > 2 and r[2]:
-                    if len(r) > 3 and r[3] and int(r[3] or 0) > 0:
-                        dtype += f"({r[2]},{r[3]})"
-                    else:
-                        dtype += f"({r[2]})"
-                cols.append(
-                    {
-                        "column": str(r[0]),
-                        "data_type": dtype,
-                        "nullable": "Y" if len(r) > 4 and str(r[4]).upper() == "Y" else "N",
-                        "default": "",
-                        "comment": str(r[5]) if len(r) > 5 and r[5] else "",
-                    }
-                )
-            return cols
-
-        # MySQL 方言（information_schema.COLUMNS，带列注释）
-        if ds.type == "mysql":
-            if not schema:
-                schema = self._guess_schema(ds, table)
-            with self.cursor(ds) as cur:
-                cur.execute(_MYSQL_COLUMNS_SQL, [schema, table])
-                rows = cur.fetchall()
-            cols = []
-            for r in rows:
-                cols.append(
-                    {
-                        "column": str(r[0]),
-                        "data_type": str(r[1]),
-                        "nullable": "Y" if len(r) > 2 and str(r[2]).upper() == "YES" else "N",
-                        "default": str(r[3]) if len(r) > 3 and r[3] is not None else "",
-                        "comment": str(r[4]) if len(r) > 4 and r[4] else "",
-                    }
-                )
-            return cols
-
-        if not schema:
-            schema = self._guess_schema(ds, table)
-        with self.cursor(ds) as cur:
-            cur.execute(_PG_COLUMNS_SQL, [schema, table])
-            rows = cur.fetchall()
-        cols = []
-        for r in rows:
-            cols.append(
-                {
-                    "column": str(r[0]),
-                    "data_type": str(r[1]),
-                    "nullable": str(r[2]) if len(r) > 2 and r[2] is not None else "",
-                    "default": str(r[3]) if len(r) > 3 and r[3] is not None else "",
-                }
-            )
-        return cols
-
-    def _guess_schema(self, ds: DataSource, table: str) -> str:
-        """若未指定 schema，尝试在用户 schema 下找表。"""
-        user = ds.username or "public"
-        with self.cursor(ds) as cur:
-            if ds.type == "db2":
-                cur.execute(
-                    "SELECT tabschema FROM syscat.tables "
-                    "WHERE tabname = ? ORDER BY tabschema = ?, tabschema",
-                    [table, user],
-                )
-            else:
-                cur.execute(
-                    "SELECT table_schema FROM information_schema.tables "
-                    "WHERE table_name = ? ORDER BY table_schema = ?, table_schema",
-                    [table, user],
-                )
-            row = cur.fetchone()
-        return str(row[0]) if row else (user if ds.type in ("db2", "mysql") else "public")
-
-    # ------------------------------------------------------------------
-    # 显式事务（BEGIN / COMMIT / ROLLBACK）
-    # ------------------------------------------------------------------
-    def begin_transaction(self, ds: DataSource) -> dict[str, Any]:
-        """开启事务：从连接池独占一个连接并关闭自动提交。
-
-        同一数据源同时只允许一个活动事务；超时（tx_timeout）会自动回滚释放。
-        """
-        self._check_circuit(ds.name)
-        with self._lock_for(ds.name):
-            if ds.name in self._tx_conns:
-                self._expire_tx_locked(ds.name)
-            if ds.name in self._tx_conns:
-                raise JDBCError(
-                    f"数据源 {ds.name} 已有活动事务，请先 commit 或 rollback"
-                )
-            conn = self._acquire(ds)
-            auto = bool(conn.jconn.getAutoCommit())
-            try:
-                conn.jconn.setAutoCommit(False)
-            except Exception as exc:  # noqa: BLE001
-                self._release(ds, conn)
-                raise JDBCError(f"开启事务失败 ({ds.name}): {exc}") from exc
-            self._tx_conns[ds.name] = {
-                "conn": conn,
-                "begun_at": _time.monotonic(),
-                "auto_commit": auto,
-            }
-        return self.transaction_status(ds)
-
-    def execute_in_transaction(
-        self, ds: DataSource, sql: str, limit: int | None = None, confirm: bool = False
-    ) -> dict[str, Any]:
-        """在活动事务连接上执行 SQL（不自动提交）。"""
-        if not sql or not sql.strip():
-            raise JDBCError("SQL 不能为空")
-        if _sql_kind(sql) == "write" and not confirm:
-            raise JDBCError(
-                "检测到写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
-                "如确认执行请传 confirm=true（将记录审计）"
-            )
-        self._check_circuit(ds.name)
-        with self._lock_for(ds.name):
-            if ds.name not in self._tx_conns:
-                raise JDBCError(f"数据源 {ds.name} 无活动事务，请先 begin_transaction")
-            if self._expire_tx_locked(ds.name):
-                raise JDBCError(
-                    f"数据源 {ds.name} 事务已超时自动回滚（>{self.settings.tx_timeout}s），请重新 begin_transaction"
-                )
-            conn = self._tx_conns[ds.name]["conn"]
-        limit = min(
-            limit if limit is not None else self.settings.max_rows,
-            self.settings.max_rows_limit,
-        )
-        t0 = _time.monotonic()
-        try:
-            cur = conn.cursor()
-            try:
-                cur.execute(sql)
-                cols = [_jsonable(d[0]) for d in (cur.description or [])]
-                rows: list[tuple] = []
-                truncated = False
-                if cur.description:  # 无结果集的语句（如 INSERT/DELETE）无需抓取
-                    while True:
-                        try:
-                            batch = cur.fetchmany(500)
-                        except Exception:  # noqa: BLE001  DB2 取完最后一行后再 fetch 会抛 "result set is closed"
-                            if rows:
-                                break
-                            raise
-                        if not batch:
-                            break
-                        rows.extend(batch)
-                        if len(rows) >= limit:
-                            rows = rows[:limit]
-                            truncated = True
-                            break
-                        if len(batch) < 500:  # 已取到底，避免多余 fetch 触发部分驱动关闭结果集
-                            break
-                if cur.rowcount is not None and not cols:
-                    affected = int(cur.rowcount) if cur.rowcount >= 0 else 0
-                else:
-                    affected = 0
-            finally:
-                try:
-                    cur.close()
-                except Exception:  # noqa: BLE001
-                    pass
-            self._record_success(ds.name)
-        except Exception as exc:  # noqa: BLE001
-            self._record_failure(ds.name)
-            with self._lock_for(ds.name):
-                st = self._stats(ds.name)
-                st["error_count"] += 1
-            raise JDBCError(f"事务内执行 SQL 失败 ({ds.name}): {exc}") from exc
-        cost_ms = (_time.monotonic() - t0) * 1000.0
-        with self._lock_for(ds.name):
-            st = self._stats(ds.name)
-            st["query_count"] += 1
-            st["rows_returned"] += len(rows)
-            st["total_query_time_ms"] += cost_ms
-        return {
-            "datasource": ds.name,
-            "in_transaction": True,
-            "columns": cols if cols else [],
-            "rows": _rows_to_jsonable(rows),
-            "row_count": len(rows),
-            "affected_rows": affected,
-            "truncated": truncated,
-            "execution_time_ms": round(cost_ms, 2),
-            "hint": "事务尚未提交，可继续执行或 commit_transaction / rollback_transaction",
-        }
-
-    def commit_transaction(self, ds: DataSource) -> dict[str, Any]:
-        """提交并结束事务，连接归还连接池。"""
-        with self._lock_for(ds.name):
-            if ds.name not in self._tx_conns:
-                raise JDBCError(f"数据源 {ds.name} 无活动事务，请先 begin_transaction")
-            if self._expire_tx_locked(ds.name):
-                raise JDBCError(
-                    f"数据源 {ds.name} 事务已超时自动回滚（>{self.settings.tx_timeout}s）"
-                )
-            rec = self._tx_conns.pop(ds.name)
-        try:
-            rec["conn"].jconn.commit()
-            self._record_success(ds.name)
-            outcome = "committed"
-        except Exception as exc:  # noqa: BLE001
-            self._record_failure(ds.name)
-            try:
-                rec["conn"].jconn.rollback()
-            except Exception:  # noqa: BLE001
-                pass
-            outcome = "rollback_after_error"
-            self._finalize_tx_conn(ds.name, rec)
-            raise JDBCError(f"提交事务失败 ({ds.name}): {exc}") from exc
-        self._finalize_tx_conn(ds.name, rec)
-        return {"datasource": ds.name, "status": outcome}
-
-    def rollback_transaction(self, ds: DataSource) -> dict[str, Any]:
-        """回滚并结束事务，连接归还连接池。"""
-        with self._lock_for(ds.name):
-            if ds.name not in self._tx_conns:
-                raise JDBCError(f"数据源 {ds.name} 无活动事务，请先 begin_transaction")
-            self._expire_tx_locked(ds.name)
-            rec = self._tx_conns.pop(ds.name)
-        try:
-            rec["conn"].jconn.rollback()
-        except Exception as exc:  # noqa: BLE001
-            self._finalize_tx_conn(ds.name, rec)
-            raise JDBCError(f"回滚事务失败 ({ds.name}): {exc}") from exc
-        self._finalize_tx_conn(ds.name, rec)
-        return {"datasource": ds.name, "status": "rolled_back"}
-
-    def transaction_status(self, ds: DataSource) -> dict[str, Any]:
-        """查询数据源是否有活动事务及其已持续时间（秒）。"""
-        with self._lock_for(ds.name):
-            if ds.name not in self._tx_conns:
-                return {"datasource": ds.name, "active": False}
-            self._expire_tx_locked(ds.name)
-            if ds.name not in self._tx_conns:
-                return {
-                    "datasource": ds.name,
-                    "active": False,
-                    "note": "事务已超时自动回滚",
-                }
-            rec = self._tx_conns[ds.name]
-            return {
-                "datasource": ds.name,
-                "active": True,
-                "elapsed_seconds": round(_time.monotonic() - rec["begun_at"], 2),
-                "timeout_seconds": self.settings.tx_timeout,
-            }
-
-    def all_transaction_status(self) -> list[dict[str, Any]]:
-        """所有数据源的事务状态（监控用）。"""
-        return [self.transaction_status(ds) for ds in self.settings.datasources]
-
-    def _expire_tx_locked(self, name: str) -> bool:
-        """检测并回滚超时事务（调用方需持有 _lock_for(name)）。返回是否发生了超时回滚。"""
-        rec = self._tx_conns.get(name)
-        if not rec:
-            return False
-        if _time.monotonic() - rec["begun_at"] <= self.settings.tx_timeout:
-            return False
-        rec = self._tx_conns.pop(name)
-        try:
-            rec["conn"].jconn.rollback()
-        except Exception:  # noqa: BLE001
-            pass
-        self._finalize_tx_conn(name, rec)
-        logger.warning("数据源 %s 事务超时（%ss），已自动回滚", name, self.settings.tx_timeout)
-        return True
-
-    def _finalize_tx_conn(self, name: str, rec: dict[str, Any]) -> None:
-        """恢复自动提交并归还连接池。"""
-        try:
-            rec["conn"].jconn.setAutoCommit(rec["auto_commit"])
-        except Exception:  # noqa: BLE001
-            pass
-        with self._lock_for(name):
-            pool = self._pools.setdefault(name, deque())
-            if len(pool) < self._pool_size:
-                pool.append(rec["conn"])
-            else:
-                try:
-                    rec["conn"].close()
-                except Exception:  # noqa: BLE001
-                    pass
-
-    def close_all(self) -> None:
-        # 先处理活动事务连接：回滚并关闭，避免服务关闭时泄漏
-        with self._lock:
-            for name, rec in list(self._tx_conns.items()):
-                try:
-                    rec["conn"].jconn.rollback()
-                except Exception:  # noqa: BLE001
-                    pass
-                try:
-                    rec["conn"].close()
-                except Exception:  # noqa: BLE001
-                    pass
-            self._tx_conns.clear()
-        for name, pool in self._pools.items():
-            for conn in pool:
-                try:
-                    conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
-        self._pools.clear()
-        for name in self._ds_stats:
-            self._ds_stats[name]["connected"] = False
-
-    # ------------------------------------------------------------------
-    # 脚本执行
-    # ------------------------------------------------------------------
-    def save_script(
-        self,
-        name: str,
-        content: str,
-        overwrite: bool = False,
-    ) -> dict[str, Any]:
-        """保存 SQL 脚本到脚本根目录（scripts/sql），供 execute_script 按路径执行。
-
-        - 防目录穿越：仅允许写入脚本根目录内部
-        - 已存在同名脚本时需 overwrite=true
-        """
-        if not name or not name.strip():
-            raise JDBCError("脚本名不能为空")
-        if not content or not content.strip():
-            raise JDBCError("脚本内容不能为空")
-
-        root = Path(self.settings.script_root).resolve()
-        root.mkdir(parents=True, exist_ok=True)
-        target = (root / name.strip()).resolve()
-        try:
-            target.relative_to(root)
-        except ValueError as exc:
-            raise JDBCError(
-                f"脚本必须写入脚本根目录内（{self._script_root_display()}），禁止写到目录外: {name}"
-            ) from exc
-        if target.is_dir():
-            raise JDBCError(f"目标已存在且为目录: {name}")
-        existed = target.exists()
-        if existed and not overwrite:
-            raise JDBCError(f"脚本已存在: {name}（如需覆盖请传 overwrite=true）")
-
-        target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            target.write_text(content, encoding="utf-8")
-        except OSError as exc:
-            raise JDBCError(f"写入脚本失败: {exc}") from exc
-        rel = str(target.relative_to(root))
-        size = len(content.encode("utf-8"))
-        # 服务端日志保留绝对路径（运维排查需要）；对外响应只给相对名，避免泄露服务器路径
-        logger.info("保存脚本: %s (%d 字节) -> %s", rel, size, target)
-        return {
-            "saved": rel,
-            "bytes": size,
-            "overwritten": existed,
-            "message": (
-                f"脚本已保存: {rel}；执行时 execute_script 的 script_path "
-                f'直接传 "{rel}" 即可'
-            ),
-            # 审计补充：脚本内容快照 + hash（供审计页面查看写入内容）
-            "_audit_extra": {
-                "script_name": rel,
-                "script_content": content,
-                "script_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()[:16],
-                "bytes": size,
-            },
-        }
-
-    @staticmethod
-    def _safe_path_display(value: str | Path) -> str:
-        """把配置路径渲染为【不含服务器绝对路径】的描述（对外错误信息用）。
-
-        相对配置值原样显示；绝对路径（POSIX `/`、Windows 盘符 `D:/`、UNC `//`）
-        只保留末尾两级目录（如 `scripts/sql`），避免向 MCP 客户端泄露部署目录结构。
-        """
-        raw = str(value).replace("\\", "/").rstrip("/")
-        if not raw:
-            return ""
-        if not re.match(r"^(/|[A-Za-z]:/|//)", raw):
-            return raw
-        parts = [
-            seg for seg in raw.split("/") if seg and not re.fullmatch(r"[A-Za-z]:", seg)
-        ]
-        return "/".join(parts[-2:]) or raw
-
-    def _script_root_display(self) -> str:
-        """错误提示用的脚本根目录描述（绝不输出服务器绝对路径）。"""
-        return self._safe_path_display(self.settings.script_root) or "scripts/sql"
-
-    def _script_rel(self, p: Path) -> str:
-        """把脚本路径渲染为脚本根目录内的相对路径（对外输出用，避免泄露服务器绝对路径）。"""
-        root = Path(self.settings.script_root).resolve()
-        try:
-            return str(p.relative_to(root))
-        except ValueError:  # 理论上不可达：调用前已由 resolve_script_file 校验
-            return p.name
-
-    def resolve_script_file(self, script_path: str) -> Path:
-        """解析并校验脚本文件位于脚本根目录内（防目录穿越）。
-
-        为便于与 save_script 的返回值配套使用，支持两种写法：
-        - 脚本根目录内的相对路径（save_script 返回的 saved）
-        - 绝对路径（save_script 返回的 path）
-
-        相对路径优先按脚本根目录解析（与 save_script 写入位置一致），
-        不存在时再按当前工作目录解析，兼容旧写法。
-        """
-        if not script_path or not str(script_path).strip():
-            raise JDBCError("脚本路径不能为空")
-        root = Path(self.settings.script_root).resolve()
-        raw = Path(str(script_path).strip())
-        candidates = [raw] if raw.is_absolute() else [root / raw, raw]
-        for cand in candidates:
-            p = cand.resolve()
-            if not p.is_file():
-                continue
-            try:
-                p.relative_to(root)
-            except ValueError as exc:
-                raise JDBCError(
-                    f"脚本必须在脚本根目录内（{self._script_root_display()}），"
-                    f"禁止执行目录外文件: {script_path}"
-                ) from exc
-            return p
-        raise JDBCError(
-            f"脚本文件不存在: {script_path}（脚本根目录: {self._script_root_display()}）"
-        )
-
-    def execute_script(
-        self,
-        ds: DataSource,
-        script_path: str,
-        params: dict[str, Any] | None = None,
-        read_only: bool = True,
-        limit: int | None = None,
-        env: dict[str, str] | None = None,
-        confirm: bool = False,
-    ) -> dict[str, Any]:
-        """执行 SQL 脚本文件，支持 ${VAR} 参数占位符。
-
-        参数来源优先级：params -> 环境变量 -> 缺失报错。
-        read_only=True 时仅允许 SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 语句；
-        read_only=False 且脚本含写操作（DELETE/UPDATE 等）时需 confirm=True 二次确认。
-        任一语句失败即停止后续。
-        """
-        p = self.resolve_script_file(script_path)
-        try:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        except OSError as exc:
-            raise JDBCError(f"读取脚本失败: {exc}") from exc
-
-        resolved = resolve_script_params(text, params, env)
-        statements = split_sql_script(resolved)
-        if not statements:
-            raise JDBCError(f"脚本 {p} 中没有可执行的 SQL 语句")
-
-        if read_only:
-            for s in statements:
-                if not _is_readonly(s):
-                    first = s.strip().splitlines()[0][:80] if s.strip() else ""
-                    raise JDBCError(
-                        f"只读模式禁止执行非查询语句（如需执行请设 read_only=false）: {first}"
-                    )
-        else:
-            # 非只读模式：脚本含写操作时需二次确认
-            if any(_sql_kind(s) == "write" for s in statements) and not confirm:
-                raise JDBCError(
-                    "脚本包含写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
-                    "如确认执行请传 read_only=false 且 confirm=true（将记录审计）"
-                )
-
-        self._check_circuit(ds.name)
-        limit = min(
-            limit if limit is not None else self.settings.max_rows,
-            self.settings.max_rows_limit,
-        )
-        results: list[dict[str, Any]] = []
-        t0_total = _time.monotonic()
-        for idx, sql in enumerate(statements, 1):
-            rec: dict[str, Any] = {
-                "index": idx,
-                "ok": True,
-                "statement_preview": sql[:120],
-            }
-            t0 = _time.monotonic()
-            try:
-                with self.cursor(ds) as cur:
-                    cur.execute(sql)
-                    if cur.description:
-                        cols = [_jsonable(d[0]) for d in cur.description]
-                        rows: list[tuple] = []
-                        truncated = False
-                        while True:
-                            try:
-                                batch = cur.fetchmany(500)
-                            except Exception:  # noqa: BLE001  DB2 取完最后一行后再 fetch 会抛 "result set is closed"
-                                if rows:
-                                    break
-                                raise
-                            if not batch:
-                                break
-                            rows.extend(batch)
-                            if len(rows) >= limit:
-                                rows = rows[:limit]
-                                truncated = True
-                                break
-                            if len(batch) < 500:  # 已取到底，避免多余 fetch 触发部分驱动关闭结果集
-                                break
-                        rec["columns"] = cols
-                        rec["rows"] = _rows_to_jsonable(rows)
-                        rec["row_count"] = len(rows)
-                        rec["truncated"] = truncated
-                    else:
-                        rec["affected_rows"] = (
-                            int(cur.rowcount) if cur.rowcount is not None and cur.rowcount >= 0 else 0
-                        )
-                self._record_success(ds.name)
-                with self._lock_for(ds.name):
-                    st = self._stats(ds.name)
-                    st["query_count"] += 1
-                    st["rows_returned"] += len(rec.get("rows", []))
-                    st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
-            except Exception as exc:  # noqa: BLE001
-                self._record_failure(ds.name)
-                rec["ok"] = False
-                rec["error"] = str(exc)
-                with self._lock_for(ds.name):
-                    self._stats(ds.name)["error_count"] += 1
-            rec["execution_time_ms"] = round((_time.monotonic() - t0) * 1000.0, 2)
-            results.append(rec)
-            if not rec["ok"]:
-                break  # 失败即停止后续语句
-
-        return {
-            "datasource": ds.name,
-            "script_path": self._script_rel(p),
-            "params": params or {},
-            "statement_count": len(results),
-            "results": results,
-            "total_time_ms": round((_time.monotonic() - t0_total) * 1000.0, 2),
-            # 审计补充：本次实际执行的脚本内容快照（参数已替换）+ hash，
-            # 供审计页面直接查看"执行的 SQL 脚本"（wrap_tool 会提取此字段）
-            "_audit_extra": {
-                "script_content": resolved,
-                "script_raw": text,
-                "script_sha256": hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16],
-                "statement_count": len(results),
-                "params_used": params or {},
-            },
-        }
-
-
-def _quote(ident: str) -> str:
-    """对标识符做基础转义，防止注入与语法错误。"""
-    return ident.replace("`", "").replace(";", "")
+    """数据库操作错误。"""
 
 
 # ----------------------------------------------------------------------
-# 脚本解析与参数替换
+# 语句分类与脚本解析（与控制面策略相关，纯函数，无 JDBC 依赖）
 # ----------------------------------------------------------------------
+_WRITE_PREFIXES = (
+    "insert", "update", "delete", "drop", "truncate", "alter", "create",
+    "grant", "revoke", "merge", "replace", "call", "commit", "rollback",
+    "vacuum", "copy", "comment", "reindex",
+)
+
 _PARAM_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _is_readonly(sql: str) -> bool:
+    """判断语句是否只读（SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 开头）。"""
+    s = sql.strip().lower()
+    return s.startswith(("select", "show", "describe", "desc ", "explain", "with"))
+
+
+def _sql_kind(sql: str) -> str:
+    """粗略识别语句类型：write / read（依据首个关键字，用于危险操作拦截）。"""
+    s = sql.strip().lstrip("(").lower()
+    for kw in _WRITE_PREFIXES:
+        if s.startswith(kw):
+            return "write"
+    return "read"
 
 
 def resolve_script_params(
@@ -1398,7 +116,6 @@ def split_sql_script(text: str) -> list[str]:
             i += 1
             continue
         if c == "-" and i + 1 < n and text[i + 1] == "-" and not in_single and not in_double:
-            # 跳过 -- 行注释（不追加到当前语句）
             while i < n and text[i] != "\n":
                 i += 1
             continue
@@ -1417,23 +134,731 @@ def split_sql_script(text: str) -> list[str]:
     return statements
 
 
-def _is_readonly(sql: str) -> bool:
-    """判断语句是否只读（SELECT/SHOW/DESCRIBE/EXPLAIN/WITH 开头）。"""
-    s = sql.strip().lower()
-    return s.startswith(("select", "show", "describe", "desc ", "explain", "with"))
+class JDBCManager:
+    """管理到各数据源的 JDBC 访问（通过 Java 桥）。"""
 
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self._bridge = BridgeClient(
+            settings.bridge_jar, java=settings.java, request_timeout=settings.bridge_timeout
+        )
+        self._bridge_started = False
+        self._opened: set[str] = set()
+        self._capabilities: dict[str, dict[str, Any]] = {}
+        self._state_lock = threading.RLock()
 
-_WRITE_PREFIXES = (
-    "insert", "update", "delete", "drop", "truncate", "alter", "create",
-    "grant", "revoke", "merge", "replace", "call", "commit", "rollback",
-    "vacuum", "copy", "comment", "reindex",
-)
+        # 元数据结果缓存：key -> (expire_at, result)
+        self._meta_cache: dict[Any, tuple[float, Any]] = {}
+        self._meta_cache_lock = threading.RLock()
+        self._meta_cache_hits = 0
+        self._meta_cache_misses = 0
 
+        # 熔断状态：name -> {failures, open_until, half_open}
+        self._circuits: dict[str, dict[str, Any]] = {}
+        # 每个数据源的连接/执行统计（监控用）
+        self._ds_stats: dict[str, dict[str, Any]] = {}
+        # 后台探活
+        self._health_thread: threading.Thread | None = None
+        self._health_stop = threading.Event()
 
-def _sql_kind(sql: str) -> str:
-    """粗略识别语句类型：write / read（依据首个关键字，用于危险操作拦截）。"""
-    s = sql.strip().lstrip("(").lower()
-    for kw in _WRITE_PREFIXES:
-        if s.startswith(kw):
-            return "write"
-    return "read"
+    # ------------------------------------------------------------------
+    # 桥生命周期
+    # ------------------------------------------------------------------
+    def _ensure_bridge(self) -> None:
+        """启动桥子进程并注册驱动（幂等）。"""
+        with self._state_lock:
+            if self._bridge_started and self._bridge.alive:
+                return
+            self._bridge.start()
+            self._bridge_started = True
+            self._register_drivers()
+
+    def _register_drivers(self) -> None:
+        """把全部数据源的驱动 jar 一次性注册给桥。"""
+        jars: list[str] = []
+        classes: list[str] = []
+        seen: set[str] = set()
+        for ds in self.settings.datasources:
+            for jar in ds.jars:
+                p = (Path(self.settings.drivers_dir) / jar).resolve()
+                if p.is_file() and str(p) not in seen:
+                    seen.add(str(p))
+                    jars.append(str(p))
+            if ds.driver_class and ds.driver_class not in classes:
+                classes.append(ds.driver_class)
+        result = self._bridge.request(
+            "driver.register", {"jarPaths": jars, "driverClassNames": classes}
+        )
+        failures = result.get("failures") or []
+        if failures:
+            for failure in failures:
+                logger.warning("驱动加载失败: %s", failure)
+
+    def _ensure_connection(self, ds: DataSource) -> None:
+        """惰性打开数据源连接（幂等；桥按 connectionId 复用连接池）。"""
+        self._ensure_bridge()
+        if ds.name in self._opened:
+            return
+        with self._state_lock:
+            if ds.name in self._opened:
+                return
+            result = self._request(
+                "connection.open",
+                {
+                    "connectionId": ds.name,
+                    "driverClassName": ds.driver_class,
+                    "url": ds.jdbc_url,
+                    "user": ds.username,
+                    "password": ds.password,
+                    "properties": ds.properties,
+                    "poolSize": max(1, self.settings.pool_size),
+                    "connectTimeoutSeconds": max(1, self.settings.connect_timeout),
+                },
+            )
+            self._capabilities[ds.name] = result.get("capabilities") or {}
+            self._opened.add(ds.name)
+            self._touch(ds.name, connected=True)
+            logger.info("已连接数据源 %s", ds.name)
+
+    def _request(self, method: str, params: dict[str, Any] | None = None, timeout: float | None = None) -> dict[str, Any]:
+        """发请求并把桥错误统一映射为 JDBCError。"""
+        try:
+            return self._bridge.request(method, params, timeout=timeout)
+        except BridgeError as exc:
+            message = _BRIDGE_ERROR_MESSAGES.get(exc.code, exc.message)
+            raise JDBCError(f"{method} 失败: {message}") from exc
+        except BridgeNotRunningError as exc:
+            raise JDBCError(f"数据库桥不可用: {exc}") from exc
+        except TimeoutError as exc:
+            raise JDBCError(f"{method} 超时") from exc
+
+    # ------------------------------------------------------------------
+    # 监控统计
+    # ------------------------------------------------------------------
+    def _stats(self, name: str) -> dict[str, Any]:
+        if name not in self._ds_stats:
+            self._ds_stats[name] = {
+                "name": name,
+                "connected": False,
+                "connected_at": None,
+                "last_active": None,
+                "query_count": 0,
+                "error_count": 0,
+                "rows_returned": 0,
+                "total_query_time_ms": 0.0,
+                "avg_query_time_ms": 0.0,
+                "last_error": None,
+                "last_health": None,
+                "health_latency_ms": None,
+            }
+        return self._ds_stats[name]
+
+    def _touch(self, name: str, *, connected: bool | None = None) -> dict[str, Any]:
+        st = self._stats(name)
+        st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
+        if connected is not None:
+            st["connected"] = connected
+            if connected:
+                st["connected_at"] = st["last_active"]
+        return st
+
+    def ds_status(self, name: str) -> dict[str, Any]:
+        st = dict(self._stats(name))
+        qc = st["query_count"]
+        st["avg_query_time_ms"] = round(st["total_query_time_ms"] / qc, 2) if qc else 0.0
+        return st
+
+    def all_status(self) -> list[dict[str, Any]]:
+        return [self.ds_status(ds.name) for ds in self.settings.datasources]
+
+    def _record_statement(self, ds: DataSource, cost_ms: float, rows: int) -> None:
+        with self._state_lock:
+            st = self._stats(ds.name)
+            st["query_count"] += 1
+            st["rows_returned"] += rows
+            st["total_query_time_ms"] += cost_ms
+            st["last_active"] = datetime.now().isoformat(timespec="milliseconds")
+
+    # ------------------------------------------------------------------
+    # 熔断
+    # ------------------------------------------------------------------
+    def _check_circuit(self, name: str) -> None:
+        c = self._circuits.get(name)
+        if not c:
+            return
+        now = _time.time()
+        if c["open_until"] and now < c["open_until"]:
+            raise JDBCError(
+                f"数据源 {name} 处于熔断状态（连续失败 {c['failures']} 次），"
+                f"请 {int(c['open_until'] - now) + 1}s 后重试"
+            )
+        if c["open_until"] and now >= c["open_until"]:
+            c["open_until"] = 0.0
+            c["half_open"] = True
+
+    def _record_success(self, name: str) -> None:
+        c = self._circuits.setdefault(name, {"failures": 0, "open_until": 0.0, "half_open": False})
+        c["failures"] = 0
+        c["half_open"] = False
+        c["open_until"] = 0.0
+
+    def _record_failure(self, name: str) -> None:
+        c = self._circuits.setdefault(name, {"failures": 0, "open_until": 0.0, "half_open": False})
+        c["failures"] += 1
+        if c["failures"] >= self.settings.circuit_fail_threshold:
+            c["open_until"] = _time.time() + self.settings.circuit_cooldown
+            c["half_open"] = False
+
+    def circuit_status(self, name: str) -> dict[str, Any]:
+        c = self._circuits.get(name)
+        if not c:
+            return {"name": name, "open": False, "failures": 0}
+        now = _time.time()
+        return {
+            "name": name,
+            "open": bool(c["open_until"] and now < c["open_until"]),
+            "failures": c["failures"],
+            "half_open": c.get("half_open", False),
+            "cooldown_left_seconds": max(0, int(c["open_until"] - now)) if c["open_until"] else 0,
+        }
+
+    # ------------------------------------------------------------------
+    # 查询
+    # ------------------------------------------------------------------
+    def execute_query(
+        self, ds: DataSource, sql: str, limit: int | None = None, confirm: bool = False
+    ) -> dict[str, Any]:
+        """执行 SQL，返回 {columns, rows, row_count, truncated, execution_time_ms}。
+
+        - 写操作默认拦截，需 confirm=True 才执行（并记审计）；
+        - limit 上限受 max_rows_limit 限制。
+        """
+        if not sql or not sql.strip():
+            raise JDBCError("SQL 不能为空")
+        if _sql_kind(sql) == "write" and not confirm:
+            raise JDBCError(
+                "检测到写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
+                "如确认执行请传 confirm=true（将记录审计）"
+            )
+        self._check_circuit(ds.name)
+        limit = min(max(1, limit if limit is not None else self.settings.max_rows), self.settings.max_rows_limit)
+        return self._execute_raw(ds, sql, limit)
+
+    def _execute_raw(self, ds: DataSource, sql: str, limit: int) -> dict[str, Any]:
+        """执行 SQL（不重复做写操作拦截；调用方保证已通过策略检查）。"""
+        self._ensure_connection(ds)
+        t0 = _time.monotonic()
+        try:
+            result = self._request(
+                "query.execute",
+                {
+                    "connectionId": ds.name,
+                    "sql": sql,
+                    "pageSize": limit,
+                    "maxRows": limit,
+                    "columnRemarks": False,
+                },
+            )
+            self._record_success(ds.name)
+        except Exception as exc:  # noqa: BLE001
+            self._record_failure(ds.name)
+            self._stats(ds.name)["error_count"] += 1
+            self._stats(ds.name)["last_error"] = str(exc)
+            raise
+        cost_ms = round((_time.monotonic() - t0) * 1000.0, 2)
+
+        if not result.get("hasResultSet"):
+            affected = int(result.get("updateCount") or 0)
+            self._record_statement(ds, cost_ms, 0)
+            return {
+                "datasource": ds.name,
+                "columns": [],
+                "rows": [],
+                "row_count": 0,
+                "truncated": False,
+                "affected_rows": affected,
+                "execution_time_ms": cost_ms,
+                "max_allowed": limit,
+            }
+
+        columns = [str(c.get("label") or c.get("name") or "") for c in result.get("columns", [])]
+        rows = result.get("rows", []) or []
+        self._record_statement(ds, cost_ms, len(rows))
+        return {
+            "datasource": ds.name,
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": bool(result.get("truncated", False)),
+            "execution_time_ms": cost_ms,
+            "max_allowed": limit,
+        }
+
+    def execute_paged(
+        self, ds: DataSource, sql: str, page_size: int = 500, max_rows: int | None = None
+    ) -> Iterator[dict[str, Any]]:
+        """分页执行查询，逐页 yield {"columns", "rows", "truncated"}。
+
+        首个 yield 带 columns（后续为 None），truncated 表示命中行数上限。
+        供 export.py 流式落盘，避免一次性把大结果集塞进内存。
+        """
+        self._ensure_connection(ds)
+        cap = max_rows or self.settings.export_max_rows
+        result = self._request(
+            "query.execute",
+            {
+                "connectionId": ds.name,
+                "sql": sql,
+                "pageSize": page_size,
+                "maxRows": cap,
+                "columnRemarks": False,
+            },
+        )
+        query_id = result.get("queryId")
+        if not result.get("hasResultSet"):
+            yield {"columns": [], "rows": [], "truncated": False}
+            return
+        columns = [str(c.get("label") or c.get("name") or "") for c in result.get("columns", [])]
+        yield {"columns": columns, "rows": result.get("rows", []), "truncated": bool(result.get("truncated", False))}
+
+        total = int(result.get("totalRows") or 0)
+        offset = page_size
+        while offset < total:
+            page = self._request(
+                "query.fetch", {"queryId": query_id, "offset": offset, "limit": page_size}
+            )
+            rows = page.get("rows", []) or []
+            if not rows:
+                break
+            yield {"columns": None, "rows": rows, "truncated": False}
+            offset += len(rows)
+
+        try:
+            self._request("query.close", {"queryId": query_id}, timeout=5.0)
+        except Exception:  # noqa: BLE001 结果集清理尽力而为
+            pass
+
+    def test_connection(self, ds: DataSource) -> dict[str, Any]:
+        """测试连接并返回数据库产品信息。"""
+        self._check_circuit(ds.name)
+        self._ensure_connection(ds)
+        caps = self._capabilities.get(ds.name, {})
+        self._record_success(ds.name)
+        return {
+            "datasource": ds.name,
+            "ok": True,
+            "product": caps.get("databaseProductName") or ds.type,
+            "version": caps.get("databaseProductVersion") or "",
+        }
+
+    # ------------------------------------------------------------------
+    # 元数据（走 DatabaseMetaData，无方言 SQL）
+    # ------------------------------------------------------------------
+    def _cached_meta(self, key: Any, ttl: int | None, producer) -> Any:
+        ttl = self.settings.meta_cache_ttl if ttl is None else ttl
+        if ttl <= 0:
+            return producer()
+        now = _time.monotonic()
+        with self._meta_cache_lock:
+            hit = self._meta_cache.get(key)
+            if hit and hit[0] > now:
+                self._meta_cache_hits += 1
+                return hit[1]
+            self._meta_cache_misses += 1
+        result = producer()
+        with self._meta_cache_lock:
+            self._meta_cache[key] = (now + ttl, result)
+            if len(self._meta_cache) > self.settings.meta_cache_max_items:
+                expired = sorted(self._meta_cache.items(), key=lambda kv: kv[1][0])
+                for k, _ in expired[: len(self._meta_cache) - self.settings.meta_cache_max_items // 2]:
+                    self._meta_cache.pop(k, None)
+        return result
+
+    def meta_cache_stats(self) -> dict[str, Any]:
+        with self._meta_cache_lock:
+            return {
+                "items": len(self._meta_cache),
+                "hits": self._meta_cache_hits,
+                "misses": self._meta_cache_misses,
+            }
+
+    def list_schemas(self, ds: DataSource) -> list[str]:
+        return self._cached_meta(("schemas", ds.name), None, lambda: self._list_schemas_uncached(ds))
+
+    def _list_schemas_uncached(self, ds: DataSource) -> list[str]:
+        self._ensure_connection(ds)
+        result = self._request("metadata.schemas", {"connectionId": ds.name})
+        return [str(s) for s in result.get("schemas", [])]
+
+    def list_tables(
+        self, ds: DataSource, schema: str | None = None, search: str | None = None
+    ) -> list[dict[str, str]]:
+        key = ("tables", ds.name, schema, search)
+        return self._cached_meta(key, None, lambda: self._list_tables_uncached(ds, schema, search))
+
+    def _list_tables_uncached(
+        self, ds: DataSource, schema: str | None = None, search: str | None = None
+    ) -> list[dict[str, str]]:
+        self._ensure_connection(ds)
+        params: dict[str, Any] = {"connectionId": ds.name, "namePattern": "%"}
+        if schema:
+            params["schema"] = schema
+        if search:
+            params["namePattern"] = f"%{search}%"
+        result = self._request("metadata.tables", params)
+        tables: list[dict[str, str]] = []
+        for t in result.get("tables", []):
+            tables.append(
+                {
+                    "schema": str(t.get("schema") or ""),
+                    "table": str(t.get("name") or ""),
+                    "type": str(t.get("type") or ""),
+                }
+            )
+        return tables
+
+    def describe_table(
+        self, ds: DataSource, table: str, schema: str | None = None
+    ) -> list[dict[str, str]]:
+        key = ("describe", ds.name, table, schema)
+        return self._cached_meta(key, None, lambda: self._describe_table_uncached(ds, table, schema))
+
+    def _describe_table_uncached(
+        self, ds: DataSource, table: str, schema: str | None = None
+    ) -> list[dict[str, str]]:
+        self._ensure_connection(ds)
+        params: dict[str, Any] = {"connectionId": ds.name, "table": table}
+        if schema:
+            params["schema"] = schema
+        result = self._request("metadata.columns", params)
+        cols: list[dict[str, str]] = []
+        for c in result.get("columns", []):
+            cols.append(
+                {
+                    "column": str(c.get("name") or ""),
+                    "type": str(c.get("displayType") or c.get("typeName") or ""),
+                    "nullable": "Y" if c.get("nullable") else "N",
+                    "default": str(c.get("defaultValue") or ""),
+                    "comment": str(c.get("remarks") or ""),
+                }
+            )
+        return cols
+
+    # ------------------------------------------------------------------
+    # 健康检查
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _ping_sql(ds: DataSource) -> str:
+        if ds.type == "db2":
+            return _DB2_PING_SQL
+        return _PING_SQL
+
+    def health(self, ds: DataSource, deep: bool = True) -> dict[str, Any]:
+        """数据源健康检查。deep=False 时返回缓存状态（若从未探测则做一次真实探测）。"""
+        st = self._stats(ds.name)
+        if not deep and st.get("last_health") is not None:
+            return {
+                "datasource": ds.name,
+                "ok": bool(st["connected"]),
+                "latency_ms": st.get("health_latency_ms"),
+                "last_health": st.get("last_health"),
+                "error": st.get("last_error"),
+            }
+        self._check_circuit(ds.name)
+        t0 = _time.monotonic()
+        try:
+            self._ensure_connection(ds)
+            self._request(
+                "query.execute",
+                {"connectionId": ds.name, "sql": self._ping_sql(ds), "pageSize": 1, "maxRows": 1},
+            )
+            alive, err = True, None
+            self._record_success(ds.name)
+        except Exception as exc:  # noqa: BLE001
+            alive, err = False, str(exc)
+        latency_ms = round((_time.monotonic() - t0) * 1000.0, 2)
+        st["last_health"] = datetime.now().isoformat(timespec="milliseconds")
+        st["health_latency_ms"] = latency_ms
+        st["connected"] = alive
+        st["last_error"] = err
+        return {
+            "datasource": ds.name,
+            "ok": alive,
+            "latency_ms": latency_ms,
+            "last_health": st["last_health"],
+            "error": err,
+        }
+
+    def start_health_checker(self, interval: float | None = None) -> None:
+        if self._health_thread is not None and self._health_thread.is_alive():
+            return
+        interval = interval or max(5, self.settings.health_check_interval)
+        self._health_stop.clear()
+
+        def _loop() -> None:
+            while not self._health_stop.wait(interval):
+                for ds in list(self.settings.datasources):
+                    try:
+                        self.health(ds, deep=True)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("健康检查失败 %s: %s", ds.name, exc)
+
+        self._health_thread = threading.Thread(target=_loop, name="ds-health-checker", daemon=True)
+        self._health_thread.start()
+
+    def stop_health_checker(self) -> None:
+        self._health_stop.set()
+        if self._health_thread is not None:
+            try:
+                self._health_thread.join(timeout=2.0)
+            except RuntimeError:
+                pass
+
+    # ------------------------------------------------------------------
+    # 显式事务（BEGIN / COMMIT / ROLLBACK，事务由桥按 connectionId 管理）
+    # ------------------------------------------------------------------
+    def begin_transaction(self, ds: DataSource) -> dict[str, Any]:
+        self._check_circuit(ds.name)
+        self._ensure_connection(ds)
+        result = self._request(
+            "connection.beginTransaction",
+            {"connectionId": ds.name, "timeoutSeconds": max(0, self.settings.tx_timeout)},
+        )
+        return {"datasource": ds.name, "active": True, **self._tx_status_fields(result)}
+
+    def execute_in_transaction(
+        self, ds: DataSource, sql: str, limit: int | None = None, confirm: bool = False
+    ) -> dict[str, Any]:
+        """在活动事务连接上执行 SQL（不自动提交）。事务已激活时 query.execute 会自动路由到该连接。"""
+        if not sql or not sql.strip():
+            raise JDBCError("SQL 不能为空")
+        if _sql_kind(sql) == "write" and not confirm:
+            raise JDBCError(
+                "检测到写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
+                "如确认执行请传 confirm=true（将记录审计）"
+            )
+        status = self.transaction_status(ds)
+        if not status.get("active"):
+            raise JDBCError(f"数据源 {ds.name} 无活动事务，请先 begin_transaction")
+        self._check_circuit(ds.name)
+        limit = min(max(1, limit if limit is not None else self.settings.max_rows), self.settings.max_rows_limit)
+        result = self._execute_raw(ds, sql, limit)
+        result["in_transaction"] = True
+        return result
+
+    def commit_transaction(self, ds: DataSource) -> dict[str, Any]:
+        result = self._request("connection.commitTransaction", {"connectionId": ds.name})
+        self._record_success(ds.name)
+        return {"datasource": ds.name, "status": result.get("status", "committed")}
+
+    def rollback_transaction(self, ds: DataSource) -> dict[str, Any]:
+        result = self._request("connection.rollbackTransaction", {"connectionId": ds.name})
+        self._record_success(ds.name)
+        return {"datasource": ds.name, "status": result.get("status", "rolled_back")}
+
+    @staticmethod
+    def _tx_status_fields(result: dict[str, Any]) -> dict[str, Any]:
+        fields: dict[str, Any] = {}
+        if "elapsedMillis" in result:
+            fields["elapsed_seconds"] = round(float(result["elapsedMillis"]) / 1000.0, 2)
+        if "timeoutMillis" in result:
+            fields["timeout_seconds"] = int(result["timeoutMillis"]) // 1000
+        return fields
+
+    def transaction_status(self, ds: DataSource) -> dict[str, Any]:
+        result = self._request("connection.transactionStatus", {"connectionId": ds.name})
+        payload: dict[str, Any] = {
+            "datasource": ds.name,
+            "active": bool(result.get("active")),
+        }
+        if result.get("active"):
+            payload.update(self._tx_status_fields(result))
+            if result.get("expired"):
+                payload["note"] = "事务已超时，将在下一次操作时自动回滚"
+        return payload
+
+    def all_transaction_status(self) -> list[dict[str, Any]]:
+        return [self.transaction_status(ds) for ds in self.settings.datasources]
+
+    # ------------------------------------------------------------------
+    # 关闭
+    # ------------------------------------------------------------------
+    def close_all(self) -> None:
+        """关闭所有数据源连接并停止桥进程。"""
+        with self._state_lock:
+            opened = list(self._opened)
+        for name in opened:
+            try:
+                self._request("connection.close", {"connectionId": name}, timeout=5.0)
+            except Exception:  # noqa: BLE001
+                pass
+        with self._state_lock:
+            self._opened.clear()
+            self._capabilities.clear()
+            for name in self._ds_stats:
+                self._ds_stats[name]["connected"] = False
+        try:
+            self._bridge.close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("关闭桥失败: %s", exc)
+        self._bridge_started = False
+
+    # ------------------------------------------------------------------
+    # 脚本执行（文件层面，与控制面策略相关）
+    # ------------------------------------------------------------------
+    def save_script(self, name: str, content: str, overwrite: bool = False) -> dict[str, Any]:
+        if not name or not name.strip():
+            raise JDBCError("脚本名不能为空")
+        if not content or not content.strip():
+            raise JDBCError("脚本内容不能为空")
+
+        root = Path(self.settings.script_root).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        target = (root / name.strip()).resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise JDBCError(
+                f"脚本必须写入脚本根目录内（{self._script_root_display()}），禁止写到目录外: {name}"
+            ) from exc
+        if target.is_dir():
+            raise JDBCError(f"目标已存在且为目录: {name}")
+        existed = target.exists()
+        if existed and not overwrite:
+            raise JDBCError(f"脚本已存在: {name}（如需覆盖请传 overwrite=true）")
+
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            target.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            raise JDBCError(f"写入脚本失败: {exc}") from exc
+        rel = str(target.relative_to(root))
+        size = len(content.encode("utf-8"))
+        logger.info("保存脚本: %s (%d 字节) -> %s", rel, size, target)
+        return {
+            "saved": rel,
+            "bytes": size,
+            "overwritten": existed,
+            "message": f"脚本已保存: {rel}；执行时 execute_script 的 script_path 直接传 \"{rel}\" 即可",
+            "_audit_extra": {
+                "script_name": rel,
+                "script_content": content,
+                "script_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest()[:16],
+                "bytes": size,
+            },
+        }
+
+    @staticmethod
+    def _safe_path_display(value: str | Path) -> str:
+        raw = str(value).replace("\\", "/").rstrip("/")
+        if not raw:
+            return ""
+        if not re.match(r"^(/|[A-Za-z]:/|//)", raw):
+            return raw
+        parts = [seg for seg in raw.split("/") if seg and not re.fullmatch(r"[A-Za-z]:", seg)]
+        return "/".join(parts[-2:]) or raw
+
+    def _script_root_display(self) -> str:
+        return self._safe_path_display(self.settings.script_root) or "scripts/sql"
+
+    def _script_rel(self, p: Path) -> str:
+        root = Path(self.settings.script_root).resolve()
+        try:
+            return str(p.relative_to(root))
+        except ValueError:
+            return p.name
+
+    def resolve_script_file(self, script_path: str) -> Path:
+        if not script_path or not str(script_path).strip():
+            raise JDBCError("脚本路径不能为空")
+        root = Path(self.settings.script_root).resolve()
+        raw = Path(str(script_path).strip())
+        candidates = [raw] if raw.is_absolute() else [root / raw, raw]
+        for cand in candidates:
+            p = cand.resolve()
+            if not p.is_file():
+                continue
+            try:
+                p.relative_to(root)
+            except ValueError as exc:
+                raise JDBCError(
+                    f"脚本必须在脚本根目录内（{self._script_root_display()}），"
+                    f"禁止执行目录外文件: {script_path}"
+                ) from exc
+            return p
+        raise JDBCError(f"脚本文件不存在: {script_path}（脚本根目录: {self._script_root_display()}）")
+
+    def execute_script(
+        self,
+        ds: DataSource,
+        script_path: str,
+        params: dict[str, Any] | None = None,
+        read_only: bool = True,
+        limit: int | None = None,
+        env: dict[str, str] | None = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        p = self.resolve_script_file(script_path)
+        try:
+            text = p.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise JDBCError(f"读取脚本失败: {exc}") from exc
+
+        resolved = resolve_script_params(text, params, env)
+        statements = split_sql_script(resolved)
+        if not statements:
+            raise JDBCError(f"脚本 {p.name} 中没有可执行的 SQL 语句")
+
+        if read_only:
+            for s in statements:
+                if not _is_readonly(s):
+                    first = s.strip().splitlines()[0][:80] if s.strip() else ""
+                    raise JDBCError(f"只读模式禁止执行非查询语句（如需执行请设 read_only=false）: {first}")
+        else:
+            if any(_sql_kind(s) == "write" for s in statements) and not confirm:
+                raise JDBCError(
+                    "脚本包含写操作语句（DELETE/UPDATE/INSERT/DROP 等），已拦截；"
+                    "如确认执行请传 read_only=false 且 confirm=true（将记录审计）"
+                )
+
+        self._check_circuit(ds.name)
+        limit = min(limit if limit is not None else self.settings.max_rows, self.settings.max_rows_limit)
+        results: list[dict[str, Any]] = []
+        t0_total = _time.monotonic()
+        for idx, sql in enumerate(statements, 1):
+            rec: dict[str, Any] = {"index": idx, "ok": True, "statement_preview": sql[:120]}
+            t0 = _time.monotonic()
+            try:
+                raw = self._execute_raw(ds, sql, limit)
+                rec.update(
+                    {
+                        "columns": raw.get("columns", []),
+                        "rows": raw.get("rows", []),
+                        "row_count": raw.get("row_count", 0),
+                        "truncated": raw.get("truncated", False),
+                        "affected_rows": raw.get("affected_rows", 0),
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001
+                rec["ok"] = False
+                rec["error"] = str(exc)
+            rec["execution_time_ms"] = round((_time.monotonic() - t0) * 1000.0, 2)
+            results.append(rec)
+            if not rec["ok"]:
+                break
+
+        return {
+            "datasource": ds.name,
+            "script_path": self._script_rel(p),
+            "params": params or {},
+            "statement_count": len(results),
+            "results": results,
+            "total_time_ms": round((_time.monotonic() - t0_total) * 1000.0, 2),
+            "_audit_extra": {
+                "script_content": resolved,
+                "script_raw": text,
+                "script_sha256": hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16],
+                "statement_count": len(results),
+                "params_used": params or {},
+            },
+        }

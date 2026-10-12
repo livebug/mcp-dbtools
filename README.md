@@ -1,6 +1,6 @@
 # mcp-dbtools
 
-> **v1.2.1** · 生产可用稳定版 · [更新日志](CHANGELOG.md)
+> **v1.3.0** · 生产可用稳定版 · [更新日志](CHANGELOG.md)
 
 基于 **Python + JDBC** 的数据库 MCP（Model Context Protocol）服务，用于通过 LLM 客户端查询数据库。
 
@@ -8,7 +8,7 @@
 
 ## 功能特性
 
-- **多数据源**：GaussDB / openGauss / TDH Inceptor / Hive / DB2 / MySQL / PostgreSQL 兼容库（按方言自动适配）
+- **多数据源**：GaussDB / openGauss / TDH Inceptor / Hive / DB2 / MySQL / PostgreSQL 兼容库（JDBC 能力探测自动适配，无方言硬编码）
 - **安全**：Bearer 鉴权 · 写操作二次确认 · 密码加密存储（`{ENC:...}` AES-256-GCM）· 熔断 · 按 IP 限流 · 行数上限
 - **并发与性能**：JDBC 连接池 · 工具异步化 · 元数据 TTL 缓存
 - **可观测性**：审计（JSONL 轮转 + SQLite）· 人工审计页面 `/audit` · 监控 `/metrics` · 服务日志 `/logs` · 健康检查 `/health`
@@ -38,21 +38,21 @@
 | MySQL / MariaDB | `com.mysql.cj.jdbc.Driver` | `jdbc:mysql://host:3306/db?useUnicode=true&characterEncoding=UTF-8` |
 
 > DB2 驱动（`db2jcc4.jar`）受 IBM 许可限制无法自动下载，请手动放置到 `drivers/` 目录；
-> `type: db2` 走 SYSCAT 目录方言（`syscat.schemata/tables/columns`）。
+> `type: db2` 仅用于健康探测的 ping 语句（`SELECT 1 FROM SYSIBM.SYSDUMMY1`）。
 
 - 服务部署在服务器上，远程客户端通过 **HTTP（MCP streamable-http）** 调用，也支持 SSE 与本地 stdio。
-- JDBC 桥接通过 `jaydebeapi`（JPype 加载 JVM）。
+- JDBC 桥接通过 **open-dbclient Java 桥子进程**（NDJSON-RPC，`bridge.jar`）。
 
 ## 架构
 
 ```mermaid
 flowchart LR
     C[远程 MCP 客户端<br/>Claude / VS Code / 自定义] -- "HTTP POST /mcp<br/>MCP streamable-http" --> S[mcp-dbtools<br/>uvicorn + FastMCP]
-    S -- jaydebeapi / JPype --> J[JVM]
-    J -- "JDBC (jdbc:opengauss://)" --> G[GaussDB / openGauss 容器]
-    J -- "JDBC (jdbc:hive2://)" --> T[TDH Inceptor]
-    J -- "JDBC (jdbc:mysql://)" --> M[MySQL / MariaDB]
-    J -- "JDBC (jdbc:db2://)" --> D[DB2]
+    S -- "NDJSON-RPC<br/>spawn bridge.jar" --> B[Java 桥]
+    B -- "JDBC (jdbc:opengauss://)" --> G[GaussDB / openGauss 容器]
+    B -- "JDBC (jdbc:hive2://)" --> T[TDH Inceptor]
+    B -- "JDBC (jdbc:mysql://)" --> M[MySQL / MariaDB]
+    B -- "JDBC (jdbc:db2://)" --> D[DB2]
     S --> H[/health 健康检查/]
 ```
 
@@ -73,7 +73,8 @@ flowchart LR
 mcp-dbtools/
 ├── src/mcp_dbtools/
 │   ├── server.py        # 服务入口（HTTP/SSE/stdio + 鉴权/限流/健康检查/审计/日志路由）
-│   ├── jdbc.py          # JDBC 连接池、查询、元数据缓存、熔断、事务、健康检查
+│   ├── bridge.py        # Java 桥客户端（spawn bridge.jar + NDJSON-RPC）
+│   ├── jdbc.py          # 数据访问（经桥做查询/元数据/事务/健康 + 熔断/缓存/脚本）
 │   ├── tools.py         # MCP 工具定义（20 个）
 │   ├── config.py        # 配置加载（datasources.json + 环境变量 + 密码解密）
 │   ├── monitor.py       # 审计（JSONL 轮转 + SQLite）、执行历史、指标
@@ -99,7 +100,7 @@ mcp-dbtools/
 ## 环境要求
 
 - Python 3.10+（已测 3.13）
-- JRE/JDK 11+（JPype 需要；JPype 1.5+ 不支持 Java 8，已测 OpenJDK 21）
+- JRE/JDK 17+（运行 Java 桥 `bridge.jar`，已测 OpenJDK 21）
 - （部署）Docker 或 systemd Linux 服务器
 
 ## 快速开始
@@ -157,7 +158,7 @@ pm2 logs mcp-dbtools          # 日志
 pm2 reload mcp-dbtools        # 重启
 ```
 
-前置：内网机需 JRE/JDK 11+（JPype 1.5+ 不支持 Java 8）与 Node.js/pm2；Python 版本必须与离线包一致
+前置：内网机需 JRE/JDK 17+（运行 Java 桥）与 Node.js/pm2；Python 版本必须与离线包一致
 （包内 `python-version-required.txt`，Windows 为 3.13 64 位）——依赖含 `cp3xx` 二进制 wheel，**不能跨版本**。
 **Python 3.8 无法运行**（`mcp` SDK 要求 `>=3.10`）：Windows 包内附带 CPython 官方安装器，可在低版本机器上并行安装 3.13。
 离线包内含**完整源码快照 `source/`** 与开发依赖 wheel，内网可直接 `pip install --no-index -e source` 做二次开发（见 `docs/二次开发指南.md`）。
@@ -331,7 +332,7 @@ execute_script(datasource="gaussdb_test", script_path=saved["saved"], params={"V
 
 ### 监控指标
 - **JDBC 状态**：每个数据源 `connected` / `connected_at` / `last_active` / `query_count` / `error_count` / `rows_returned` / `total_query_time_ms` / `avg_query_time_ms`
-- **内存**：JVM 堆内存（`used`/`committed`/`max`）+ Python 进程 RSS
+- **内存**：Python 进程 RSS（`memory_mb.process_rss`；JVM 堆在桥子进程内）
 - **执行耗时**：`execute_query` 返回 `execution_time_ms`；工具级统计见 `get_status`/`/metrics`
 
 ### HTTP /metrics 端点
@@ -446,12 +447,12 @@ bash scripts/build_offline.sh --platform linux
 #   bash scripts/build_offline.sh --platform windows --self-contained
 ```
 
-> 构建机与内网机需**同为 Linux x86_64 + 相同 Python 主版本**（依赖含 manylinux 二进制 wheel，如 `jpype1`/`pydantic-core`）。
+> 构建机与内网机需**同为 Linux x86_64 + 相同 Python 主版本**（依赖含 manylinux 二进制 wheel，如 `pydantic-core`）。
 > 离线包 wheel 已锁定 manylinux2014（glibc 2.17+）平台标签，兼容 CentOS 7/8 等内网机。
 
 #### ② 拷贝到内网服务器并安装
 
-内网机需先具备：**JRE/JDK 11+**（JPype 需要 JVM，JPype 1.5+ 不支持 Java 8）、**Node.js + pm2**。
+内网机需先具备：**JRE/JDK 17+**（运行 Java 桥）、**Node.js + pm2**。
 
 ```bash
 # 上传离线包后

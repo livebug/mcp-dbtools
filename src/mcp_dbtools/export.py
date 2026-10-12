@@ -104,41 +104,25 @@ class ExportManager:
         task["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         try:
             cap = min(limit or self.max_rows, self.max_rows)
-            conn = self._jm._acquire(ds)
-            cur = None
-            try:
-                cur = conn.cursor()
-                cur.execute(sql)
-                cols = [d[0] for d in (cur.description or [])]
-                task["columns"] = cols
-                n = 0
-                truncated = False
-                with open(task["_path"], "w", encoding="utf-8", newline="") as fh:
-                    if include_header and cols:
-                        fh.write(_join_row(cols, delimiter) + "\n")
-                    while True:
-                        batch = cur.fetchmany(2000)
-                        if not batch:
-                            break
-                        for row in batch:
-                            if n >= cap:
-                                truncated = True
-                                break
-                            fh.write(_join_row(row, delimiter) + "\n")
-                            n += 1
-                        if truncated:
-                            break
-                task["rows"] = n
-                task["truncated"] = truncated
-                task["status"] = "succeeded"
-                self._jm._record_success(ds.name)
-            finally:
-                if cur is not None:
-                    try:
-                        cur.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                self._jm._release(ds, conn)
+            n = 0
+            truncated = False
+            with open(task["_path"], "w", encoding="utf-8", newline="") as fh:
+                for page in self._jm.execute_paged(ds, sql, page_size=2000, max_rows=cap):
+                    if page["columns"] is not None:
+                        task["columns"] = page["columns"]
+                        if include_header and page["columns"]:
+                            fh.write(_join_row(page["columns"], delimiter) + "\n")
+                    for row in page["rows"]:
+                        fh.write(_join_row(row, delimiter) + "\n")
+                        n += 1
+                    # truncated 表示数据库里还有超过 cap 的行，不是「本页是最后一页」——
+                    # 剩余页仍要读完（总行数已被桥封顶为 cap）。
+                    if page["truncated"]:
+                        truncated = True
+            task["rows"] = n
+            task["truncated"] = truncated
+            task["status"] = "succeeded"
+            self._jm._record_success(ds.name)
         except Exception as exc:  # noqa: BLE001
             self._jm._record_failure(ds.name)
             task["status"] = "failed"

@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import time
-from contextlib import contextmanager
 
 import pytest
 
+from mcp_dbtools.bridge import BridgeError
 from mcp_dbtools.config import DataSource, Settings
 from mcp_dbtools.export import ExportManager, _join_row
 from mcp_dbtools.jdbc import JDBCError, JDBCManager, _sql_kind
+
+from fake_bridge import FakeBridge, connection_open_response, make_manager, query_result
 
 
 def _ds(name="g"):
@@ -30,68 +32,77 @@ def test_sql_kind():
 # ---------- 危险写操作二次确认 ----------
 def test_write_requires_confirm(tmp_path):
     ds = _ds()
-    settings = Settings(datasources=[ds])
-    m = JDBCManager(settings)
+    m = make_manager(Settings(datasources=[ds]))
 
     with pytest.raises(JDBCError) as e:
         m.execute_query(ds, "DELETE FROM t")
     assert "confirm" in str(e.value)
+    # 拦截发生在请求桥之前
+    assert m._bridge.count("query.execute") == 0
 
-    # confirm=True 放行（走 fake cursor）
-    cur = _FakeCursor([(1,)])
-    m.cursor = _fake_cursor(cur)
-    m.execute_query(ds, "DELETE FROM t", confirm=True)
-    assert cur.executed_sql == "DELETE FROM t"
+
+def test_write_allowed_with_confirm(tmp_path):
+    ds = _ds()
+    m = make_manager(Settings(datasources=[ds]), respond={
+        "driver.register": {},
+        "connection.open": connection_open_response(),
+        "query.execute": query_result(update_count=3),
+    })
+    res = m.execute_query(ds, "DELETE FROM t", confirm=True)
+    assert res["affected_rows"] == 3
+    assert m._bridge.last_params("query.execute")["sql"] == "DELETE FROM t"
 
 
 # ---------- 熔断 ----------
 def test_circuit_breaker(tmp_path):
     ds = _ds()
     settings = Settings(datasources=[ds], circuit_fail_threshold=2, circuit_cooldown=1)
-    m = JDBCManager(settings)
+    calls = {"n": 0}
 
-    class BoomCursor:
-        def __init__(self):
-            self.exec_count = 0
+    def _boom(params):
+        calls["n"] += 1
+        raise BridgeError("SQL_ERROR", "boom")
 
-        def execute(self, sql, params=None):
-            self.exec_count += 1
-            raise RuntimeError("boom")
+    m = make_manager(settings, respond={
+        "driver.register": {},
+        "connection.open": connection_open_response(),
+        "query.execute": _boom,
+    })
 
-        @property
-        def description(self):
-            return None
-
-        def fetchmany(self, n):
-            return []
-
-        @property
-        def rowcount(self):
-            return -1
-
-        def close(self):
-            pass
-
-    boom = BoomCursor()
-    m.cursor = _fake_cursor(boom)
-
-    with pytest.raises(JDBCError):
-        m.execute_query(ds, "SELECT 1")
-    with pytest.raises(JDBCError):
-        m.execute_query(ds, "SELECT 1")
-    # 连续 2 次失败 -> 第 3 次直接熔断，不再执行 SQL（exec_count 仍为 2）
+    for _ in range(2):
+        with pytest.raises(JDBCError):
+            m.execute_query(ds, "SELECT 1")
+    # 连续 2 次失败 -> 第 3 次直接熔断，不再请求桥
     with pytest.raises(JDBCError) as e:
         m.execute_query(ds, "SELECT 1")
     assert "熔断" in str(e.value)
     assert m.circuit_status(ds.name)["open"] is True
-    assert boom.exec_count == 2
+    assert calls["n"] == 2
 
 
 # ---------- 导出 ----------
+class _FakeJM:
+    """模拟 JDBCManager 的 execute_paged 接口（导出后台线程用）。"""
+
+    def __init__(self, rows, columns=None):
+        self.rows = list(rows)
+        self.columns = columns or ["id", "name"]
+
+    def execute_paged(self, ds, sql, page_size=500, max_rows=None):
+        cap = min(len(self.rows), max_rows if max_rows else len(self.rows))
+        truncated = len(self.rows) > cap
+        yield {"columns": self.columns, "rows": self.rows[:cap], "truncated": truncated}
+
+    def _record_success(self, name):
+        pass
+
+    def _record_failure(self, name):
+        pass
+
+
 def test_export_flow(tmp_path):
     rows = [(1, "张三"), (2, "李四")]
-    fake_jm = _FakeJM(rows)
-    em = ExportManager(export_dir=str(tmp_path), max_rows=1000, jdbc_manager=fake_jm)
+    em = ExportManager(export_dir=str(tmp_path), max_rows=1000, jdbc_manager=_FakeJM(rows))
 
     task = em.start(_ds(), "SELECT id,name FROM t", delimiter=",", include_header=True)
     s = _wait_status(em, task["id"])
@@ -105,18 +116,15 @@ def test_export_flow(tmp_path):
     lines = content.strip().splitlines()
     assert lines[0] == "id,name"
     assert "张三" in lines[1]
-    # download_url 存在
     assert task["download_url"].endswith(f"/export/{task['id']}/download")
 
 
 def test_export_custom_delimiter_and_escape(tmp_path):
-    fake_jm = _FakeJM([("a,b", "x\"y")])
-    em = ExportManager(export_dir=str(tmp_path), max_rows=1000, jdbc_manager=fake_jm)
+    em = ExportManager(export_dir=str(tmp_path), max_rows=1000, jdbc_manager=_FakeJM([("a,b", "x\"y")]))
     task = em.start(_ds(), "SELECT 1", delimiter="|", include_header=False)
     s = _wait_status(em, task["id"])
     assert s["status"] == "succeeded"
     content = em.get_file_path(task["id"]).read_text(encoding="utf-8")
-    # 第一列含 | 分隔符？不含（用 | 分隔），含引号的值转义
     assert 'a,b|"x""y"' in content
 
 
@@ -128,75 +136,11 @@ def test_join_row():
 
 def test_export_truncate_limit(tmp_path):
     rows = [(i,) for i in range(10)]
-    fake_jm = _FakeJM(rows)
-    em = ExportManager(export_dir=str(tmp_path), max_rows=1000, jdbc_manager=fake_jm)
+    em = ExportManager(export_dir=str(tmp_path), max_rows=1000, jdbc_manager=_FakeJM(rows))
     task = em.start(_ds(), "SELECT 1", limit=3)
     s = _wait_status(em, task["id"])
     assert s["rows"] == 3
     assert s["truncated"] is True
-
-
-# ---------- helpers ----------
-class _FakeCursor:
-    def __init__(self, result):
-        self._result = list(result)
-        self.executed_sql = None
-
-    def execute(self, sql, params=None):
-        self.executed_sql = sql
-
-    @property
-    def description(self):
-        return [("id",), ("name",)]
-
-    def fetchmany(self, size):
-        out, self._result = self._result[:size], self._result[size:]
-        return out
-
-    @property
-    def rowcount(self):
-        return -1
-
-    def close(self):
-        pass
-
-
-def _fake_cursor(cur):
-    @contextmanager
-    def _cm(ds=None):
-        try:
-            yield cur
-        finally:
-            pass
-
-    return _cm
-
-
-class _FakeJM:
-    """模拟 JDBCManager 的最小对象（导出后台线程用）。"""
-
-    def __init__(self, rows):
-        self.rows = rows
-
-    def _acquire(self, ds):
-        return _FakeConn(self.rows)
-
-    def _release(self, ds, conn):
-        pass
-
-    def _record_success(self, name):
-        pass
-
-    def _record_failure(self, name):
-        pass
-
-
-class _FakeConn:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def cursor(self):
-        return _FakeCursor(self._rows)
 
 
 def _wait_status(em, export_id, timeout=5.0):

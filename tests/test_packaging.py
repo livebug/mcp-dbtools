@@ -38,7 +38,9 @@ def _pkg_name(requirement: str) -> str:
 def test_runtime_dependencies_declared():
     deps = {_pkg_name(d) for d in _project()["dependencies"]}
     assert "cryptography" in deps, f"cryptography 必须显式声明：{sorted(deps)}"
-    assert {"mcp", "jaydebeapi", "jpype1", "pydantic", "uvicorn", "starlette"} <= deps
+    # JDBC 走 open-dbclient Java 桥子进程，不再依赖 jaydebeapi/jpype1
+    assert {"mcp", "pydantic", "uvicorn", "starlette"} <= deps
+    assert "jaydebeapi" not in deps and "jpype1" not in deps
 
 
 def test_requires_python_declared():
@@ -103,7 +105,7 @@ def test_windows_bare_metal_deployment_support():
     for name in ("mcp-dbtools-run.cmd", "mcp-dbtools-service.cmd"):
         assert (win / name).is_file(), name
     runner = (win / "mcp-dbtools-run.cmd").read_text(encoding="utf-8", errors="replace")
-    assert "JAVA_HOME" in runner, "启动器必须设置 JAVA_HOME，否则 JPype 找不到 JVM"
+    assert "JAVA_HOME" in runner, "启动器必须设置 JAVA_HOME，否则找不到 Java 桥所需的 JVM"
     assert "pythonw" in runner, "后台运行应使用 pythonw.exe（无控制台窗口）"
 
 

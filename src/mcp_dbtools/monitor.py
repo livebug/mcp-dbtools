@@ -373,23 +373,12 @@ class Monitor:
     # ------------------------------------------------------------------
     @staticmethod
     def jvm_memory_mb() -> dict[str, float] | None:
-        """JVM 堆内存（MB）。JVM 未启动时返回 None。"""
-        try:
-            import jpype
+        """JVM 堆内存（MB）。
 
-            if not jpype.isJVMStarted():
-                return None
-            rt = jpype.JClass("java.lang.Runtime").getRuntime()
-            total = float(rt.totalMemory()) / 1048576.0
-            free = float(rt.freeMemory()) / 1048576.0
-            return {
-                "used": round(total - free, 2),
-                "committed": round(total, 2),
-                "max": round(float(rt.maxMemory()) / 1048576.0, 2),
-            }
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("获取 JVM 内存失败: %s", exc)
-            return None
+        JVM 现在运行在独立的 Java 桥子进程里，本进程不再内嵌 JVM；桥的堆内存
+        见 /metrics 或 get_status 中 manager 侧的桥健康快照。此处保留兼容返回 None。
+        """
+        return None
 
     @staticmethod
     def process_memory_mb() -> float | None:

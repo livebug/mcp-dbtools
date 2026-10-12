@@ -22,7 +22,7 @@
 | 组件 | 要求 |
 | --- | --- |
 | Python | **3.13（64 位）**，必须与离线包一致（包内依赖为 `cp313 win_amd64` 二进制 wheel，**不能跨版本**）；安装时勾选 "Add to PATH" |
-| JDK | **JDK 11+**（JPype 需要 JVM，推荐 17/21）。`java -version` 验证 |
+| JDK | **JDK 17+**（运行 Java 桥 `bridge.jar`）。`java -version` 验证 |
 | 防火墙 | 放行 8000 端口（远程客户端连接时） |
 
 > 包内 `python-version-required.txt` 记录要求的 Python 版本，`install_offline.bat` / `upgrade_offline.bat`
@@ -73,7 +73,7 @@ bash scripts/build_offline.sh --platform windows --self-contained
 
 ```
 1. 先停服务：pm2 stop mcp-dbtools
-   （必须：运行中的进程会锁定 .venv 内的 .pyd（jpype 等），导致依赖文件覆盖失败）
+   （必须：运行中的进程会锁定 .venv 内的编译产物 .pyd，导致依赖文件覆盖失败）
 2. 解压新版 mcp-dbtools-offline-windows-*.zip 到任意目录（如 D:\tmp\new）
 3. 执行 D:\tmp\new\upgrade_offline.bat D:\mcp-dbtools
    （D:\mcp-dbtools 为旧安装目录；会自动备份配置与源码、更新代码与依赖、尝试重启服务）

@@ -1,13 +1,13 @@
-"""SQL 脚本执行与参数替换单元测试（使用桩游标，无需真实数据库）。"""
+"""SQL 脚本执行与参数替换单元测试（用假桥替身，无需真实数据库）。"""
 
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from mcp_dbtools.bridge import BridgeError
 from mcp_dbtools.config import DataSource, Settings
 from mcp_dbtools.jdbc import (
     JDBCError,
@@ -17,34 +17,10 @@ from mcp_dbtools.jdbc import (
     split_sql_script,
 )
 
-
-class FakeCursor:
-    def __init__(self, results):
-        self._results = list(results)
-        self.sql = None
-        self.params = None
-
-    def execute(self, sql, params=None):
-        self.sql = sql
-        self.params = params
-
-    @property
-    def description(self):
-        return [("col",)] if self._results else None
-
-    def fetchmany(self, size):
-        out, self._results = self._results[:size], self._results[size:]
-        return out
-
-    @property
-    def rowcount(self):
-        return -1
-
-    def close(self):
-        pass
+from fake_bridge import connection_open_response, make_manager as _make_manager, query_result
 
 
-def make_manager(tmp_path, cursor_result):
+def make_manager(tmp_path, cursor_result=None, respond=None):
     root = Path(tmp_path) / "scripts/sql"
     root.mkdir(parents=True, exist_ok=True)
     ds = DataSource(
@@ -55,21 +31,14 @@ def make_manager(tmp_path, cursor_result):
         jars=["x.jar"],
     )
     settings = Settings(script_root=str(root), datasources=[ds])
-    m = JDBCManager(settings)
-
-    def fake_cursor(data_source):
-        cur = FakeCursor(cursor_result)
-
-        @contextmanager
-        def _cm():
-            try:
-                yield cur
-            finally:
-                pass
-
-        return _cm()
-
-    m.cursor = fake_cursor
+    base = {
+        "driver.register": {},
+        "connection.open": connection_open_response(),
+        "query.execute": query_result(rows=cursor_result or [], columns=[{"name": "col", "label": "col"}]),
+    }
+    if respond:
+        base.update(respond)
+    m = _make_manager(settings, respond=base)
     return m, ds, root
 
 
@@ -79,7 +48,6 @@ def test_split_sql_script_multiple():
     stmts = split_sql_script(text)
     assert len(stmts) == 3
     assert stmts[1] == "SELECT 'a;b' AS x"
-    # -- 注释（含注释内分号）应被剔除，不作为独立语句
     assert stmts[2] == "SELECT 2"
 
 
@@ -132,7 +100,7 @@ def test_execute_script_with_params(tmp_path):
 
 
 def test_execute_script_readonly_block(tmp_path):
-    m, ds, root = make_manager(tmp_path, [])
+    m, ds, root = make_manager(tmp_path)
     script = root / "write.sql"
     script.write_text("INSERT INTO t VALUES (1);", encoding="utf-8")
     with pytest.raises(JDBCError):
@@ -140,10 +108,11 @@ def test_execute_script_readonly_block(tmp_path):
 
 
 def test_execute_script_write_allowed(tmp_path):
-    m, ds, root = make_manager(tmp_path, [])
+    m, ds, root = make_manager(tmp_path, respond={
+        "query.execute": query_result(update_count=1),
+    })
     script = root / "write2.sql"
     script.write_text("INSERT INTO t VALUES (1);", encoding="utf-8")
-    # 非只读且写操作需 confirm=True 二次确认
     with pytest.raises(JDBCError):
         m.execute_script(ds, str(script), read_only=False)
     res = m.execute_script(ds, str(script), read_only=False, confirm=True)
@@ -151,39 +120,25 @@ def test_execute_script_write_allowed(tmp_path):
 
 
 def test_execute_script_stop_on_error(tmp_path):
-    class BoomCursor(FakeCursor):
-        def __init__(self):
-            super().__init__([])
-            self.executed = 0
+    state = {"n": 0}
 
-        def execute(self, sql, params=None):
-            self.executed += 1
-            if self.executed == 2:
-                raise RuntimeError("boom")
+    def execute(params):
+        state["n"] += 1
+        if state["n"] == 2:
+            raise BridgeError("SQL_ERROR", "boom")
+        return query_result(rows=[], columns=[{"name": "col", "label": "col"}])
 
-    m, ds, root = make_manager(tmp_path, [])
-    boom = BoomCursor()
-
-    @contextmanager
-    def _cm():
-        try:
-            yield boom
-        finally:
-            pass
-
-    m.cursor = lambda data_source: _cm()
-
+    m, ds, root = make_manager(tmp_path, respond={"query.execute": execute})
     script = root / "multi.sql"
     script.write_text("SELECT 1;\nSELECT 2;\nSELECT 3;", encoding="utf-8")
     res = m.execute_script(ds, str(script))
-    # 第 2 条失败即停止，共 2 条结果
     assert res["statement_count"] == 2
     assert res["results"][1]["ok"] is False
     assert "boom" in res["results"][1]["error"]
 
 
 def test_execute_script_outside_root(tmp_path):
-    m, ds, root = make_manager(tmp_path, [])
+    m, ds, root = make_manager(tmp_path)
     outside = Path(tmp_path) / "outside.sql"
     outside.write_text("SELECT 1;", encoding="utf-8")
     with pytest.raises(JDBCError):
@@ -191,46 +146,38 @@ def test_execute_script_outside_root(tmp_path):
 
 
 def test_execute_script_missing_file(tmp_path):
-    m, ds, root = make_manager(tmp_path, [])
+    m, ds, root = make_manager(tmp_path)
     with pytest.raises(JDBCError):
         m.execute_script(ds, str(root / "nope.sql"))
 
 
 # ---------- save_script 与 execute_script 的协作（回归） ----------
 def test_save_then_execute_with_returned_values(tmp_path):
-    """save_script 返回的相对名与绝对路径都应能直接作为 execute_script 的 script_path。
-
-    回归：此前 execute_script 只能吃绝对路径，而 save_script 的 saved 是相对名，
-    两者无法直接协作。
-    """
     m, ds, root = make_manager(tmp_path, [("row1",)])
     saved = m.save_script("demo_saved.sql", "SELECT 1 AS n;")
 
-    by_name = m.execute_script(ds, saved["saved"])          # 相对名
+    by_name = m.execute_script(ds, saved["saved"])
     assert by_name["statement_count"] == 1
-    assert by_name["script_path"] == "demo_saved.sql"       # 对外只给相对路径
+    assert by_name["script_path"] == "demo_saved.sql"
 
-    # 绝对路径输入仍然兼容（旧写法），但响应同样不暴露绝对路径
     by_abs = m.execute_script(ds, str((root / "demo_saved.sql").resolve()))
     assert by_abs["statement_count"] == 1
     assert by_abs["script_path"] == by_name["script_path"]
 
 
 def test_save_then_execute_relative_name_from_other_cwd(tmp_path, monkeypatch):
-    """工作目录不在脚本根目录时，save_script 返回的相对名仍可用（核心回归点）。"""
     m, ds, root = make_manager(tmp_path, [("row1",)])
-    saved = m.save_script("sub/nested.sql", "SELECT 1 AS n;")   # 支持子目录
+    saved = m.save_script("sub/nested.sql", "SELECT 1 AS n;")
 
-    monkeypatch.chdir(tmp_path)                                  # cwd ≠ 脚本根目录
+    monkeypatch.chdir(tmp_path)
     res = m.execute_script(ds, saved["saved"])
     assert res["results"][0]["ok"] is True
     assert res["script_path"] == "sub/nested.sql"
 
 
 def test_execute_script_relative_traversal_blocked(tmp_path):
-    """相对路径的目录穿越必须被拒绝（不能因相对解析而绕过脚本根目录限制）。"""
-    m, ds, root = make_manager(tmp_path, [])
-    outside = root.parent / "evil.sql"          # 脚本根目录的上一级
+    m, ds, root = make_manager(tmp_path)
+    outside = root.parent / "evil.sql"
     outside.write_text("SELECT 1;", encoding="utf-8")
     assert outside.is_file()
     with pytest.raises(JDBCError, match="脚本根目录内"):
@@ -238,13 +185,12 @@ def test_execute_script_relative_traversal_blocked(tmp_path):
 
 
 def test_execute_script_empty_path(tmp_path):
-    m, ds, root = make_manager(tmp_path, [])
+    m, ds, root = make_manager(tmp_path)
     with pytest.raises(JDBCError, match="不能为空"):
         m.execute_script(ds, "   ")
 
 
 def test_script_tools_do_not_leak_absolute_paths(tmp_path):
-    """工具响应与错误信息不得包含服务器绝对路径（含脚本根目录的绝对路径）。"""
     m, ds, root = make_manager(tmp_path, [("row1",)])
     abs_root = str(root.resolve())
 
@@ -257,7 +203,6 @@ def test_script_tools_do_not_leak_absolute_paths(tmp_path):
     dumped = json.dumps(res, ensure_ascii=False, default=str)
     assert abs_root not in dumped, f"execute_script 响应泄露绝对路径: {dumped}"
 
-    # 错误信息同样不能泄露
     with pytest.raises(JDBCError) as exc:
         m.execute_script(ds, "missing.sql")
     assert abs_root not in str(exc.value)

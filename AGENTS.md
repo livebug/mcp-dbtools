@@ -6,7 +6,9 @@
 ## 项目是什么
 
 基于 **Python + JDBC** 的数据库 MCP 服务，通过 HTTP（streamable-http）让 LLM 客户端查询
-GaussDB / openGauss / TDH Inceptor / Hive / DB2 / MySQL / PostgreSQL 等数据库。JVM 桥接用 jaydebeapi。
+GaussDB / openGauss / TDH Inceptor / Hive / DB2 / MySQL / PostgreSQL 等数据库。
+JDBC 访问通过 **open-dbclient Java 桥子进程**（NDJSON-RPC，见 `src/mcp_dbtools/bridge.py`），
+不再是 jaydebeapi/JPype 内嵌 JVM。桥 jar 路径用 `MCP_DBTOOLS_BRIDGE_JAR` 配置（默认 `bridge.jar`）。
 
 ## 构建与测试
 
@@ -31,7 +33,8 @@ GAUSS_PASSWORD=... . .venv/bin/activate && python -m mcp_dbtools --transport str
 | 文件 | 职责 |
 | --- | --- |
 | `src/mcp_dbtools/server.py` | 服务入口：HTTP 路由、鉴权、限流、健康检查、审计/日志页面 |
-| `src/mcp_dbtools/jdbc.py` | JDBC 连接池、查询、元数据缓存、熔断、显式事务、健康探测 |
+| `src/mcp_dbtools/bridge.py` | Java 桥客户端：spawn `bridge.jar`、NDJSON-RPC 请求/响应/事件、错误映射 |
+| `src/mcp_dbtools/jdbc.py` | 数据访问：经桥做查询/元数据/事务/健康，含熔断、元数据缓存、脚本执行 |
 | `src/mcp_dbtools/tools.py` | 20 个 MCP 工具定义 |
 | `src/mcp_dbtools/config.py` | 配置加载（datasources.json + `MCP_DBTOOLS_*` 环境变量 + `{ENC:...}` 密码解密） |
 | `src/mcp_dbtools/monitor.py` | 审计（JSONL 轮转 + SQLite）、执行历史、指标 |
@@ -46,7 +49,7 @@ GAUSS_PASSWORD=... . .venv/bin/activate && python -m mcp_dbtools --transport str
 - MCP 工具参数用**标量 + `Annotated[str, Field(...)]`**，不要用单个 pydantic model 参数（跨版本行为不一致）。
 - FastMCP 的 `streamable_http_app()` 自带 lifespan，**必须作为顶层 ASGI app**，不能二次 mount。
 - **`jdbc.py` 里 `import time as _time`**——`from datetime import ... time` 会遮蔽 `time` 模块。
-- JPype 返回的 Java 数值是 `int/float` 子类，判断用 `isinstance` 而非 `type` 相等；`BigDecimal` 走 `scale()` 判断。
+- JDBC 错误统一由 `jdbc._request` 映射为 `JDBCError`；桥错误码的中文文案集中在 `_BRIDGE_ERROR_MESSAGES`。
 - 新增配置项必须同时更新：`config.py`（Settings 字段 + 环境变量）、`.env.example`、`docs/使用说明.md`。
 - 新增 MCP 工具必须 `@wrap_tool(monitor, "工具名")` 包装以记录审计。
 

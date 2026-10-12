@@ -19,10 +19,10 @@ user-invocable: true
 
 ## 前提
 - 构建机（外网）与内网机均为 **Linux x86_64**（或 Windows 目标机），Python **版本必须与包内
-  `python-version-required.txt` 一致**（jpype1/pydantic-core 是 cp3xx 二进制 wheel，不跨版本）
+  `python-version-required.txt` 一致**（pydantic-core 等是 cp3xx 二进制 wheel，不跨版本）
 - **Python 3.8/3.9 不可用**：`mcp` SDK 全版本要求 `>=3.10`（`pip download` 直接报
   `No matching distribution found for mcp`）。Windows 包会附带 CPython 官方安装器供低版本机并行安装
-- 内网机需已装 **JRE/JDK 11+**（JPype 需要）与 **Node.js/pm2**
+- 内网机需已装 **JRE/JDK 17+**（运行 Java 桥）与 **Node.js/pm2**
 
 ## 流程
 
@@ -96,7 +96,7 @@ pm2 stop mcp-dbtools                     # 停止
   只提示 `already installed with the same version as the provided wheel`，**代码不会更新但脚本仍报"升级完成"**。
   升级脚本已用 `--force-reinstall --no-deps` 修掉（依赖另用 `-r requirements.txt` 升级）；
   同时**打包前应 bump 版本号**，否则内网无法用 `__version__` 判断新旧。
-- **Windows 升级前必须 `pm2 stop mcp-dbtools`**：运行中的进程锁定 venv 内 `.pyd`（jpype 等），pip 覆盖会失败。
+- **Windows 升级前必须 `pm2 stop mcp-dbtools`**：运行中的进程锁定 venv 内编译产物 `.pyd`，pip 覆盖会失败。
 - Windows 升级脚本**不拷贝 `ecosystem-windows.config.cjs`**；改其 `env` 后需 `pm2 delete` + `pm2 start`
   （`pm2 restart --update-env` 不会重读 cjs）。
 - 升级脚本只更新 `*.example`，**不会合并用户的 `.env` 与 `config/datasources.json`**，新增配置项要手工补。
