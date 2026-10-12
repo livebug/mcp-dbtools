@@ -3,6 +3,14 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.5.0] - 2026-10-12
+
+### 变更
+
+- **共享桥鉴权与租户隔离**：新增 `MCP_DBTOOLS_BRIDGE_TOKEN`（对应 `--listen --token`）与
+  `MCP_DBTOOLS_TENANT_ID`。多个 MCP 服务共用一个共享桥时，各自设唯一 `tenant_id`，连接
+  connectionId 自动加租户前缀，互不越权（谁开的连接谁能用）。
+
 ## [1.4.0] - 2026-10-12
 
 ### 变更

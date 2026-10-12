@@ -157,6 +157,8 @@ class Settings:
     java: str = "java"                      # Java 可执行文件（JRE/JDK 17+）
     bridge_timeout: float = 120.0           # 桥请求默认超时（秒）
     bridge_url: str | None = None           # 远程共享桥地址 "host:port"（--listen 模式）；不设置则 spawn 本地桥
+    bridge_token: str | None = None         # 连接共享桥时所需的共享密钥（--listen --token）
+    tenant_id: str | None = None            # 租户标识：共享桥上按此隔离连接归属（多服务共用一个桥时必填）
     datasources: list[DataSource] = field(default_factory=list)
 
 
@@ -221,6 +223,8 @@ def load_settings() -> Settings:
         java=env.get("MCP_DBTOOLS_JAVA", "java"),
         bridge_timeout=float(env.get("MCP_DBTOOLS_BRIDGE_TIMEOUT", "120")),
         bridge_url=env.get("MCP_DBTOOLS_BRIDGE_URL") or None,
+        bridge_token=env.get("MCP_DBTOOLS_BRIDGE_TOKEN") or None,
+        tenant_id=env.get("MCP_DBTOOLS_TENANT_ID") or None,
     )
 
     raw = _load_json(cfg.config_path)

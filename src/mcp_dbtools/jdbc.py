@@ -158,7 +158,8 @@ class JDBCManager:
         self.settings = settings
         remote = _parse_bridge_url(settings.bridge_url) if settings.bridge_url else None
         self._bridge = BridgeClient(
-            settings.bridge_jar, java=settings.java, request_timeout=settings.bridge_timeout, remote=remote
+            settings.bridge_jar, java=settings.java, request_timeout=settings.bridge_timeout,
+            remote=remote, token=settings.bridge_token, tenant_id=settings.tenant_id,
         )
         self._bridge_started = False
         self._opened: set[str] = set()
@@ -212,18 +213,28 @@ class JDBCManager:
             for failure in failures:
                 logger.warning("驱动加载失败: %s", failure)
 
+    def _cid(self, ds: DataSource) -> str:
+        """该数据源在共享桥上的 connectionId。
+
+        有租户标识时加前缀，隔离不同服务实例的连接（谁开的连接谁能用）；本地 spawn 无租户则用数据源名。
+        """
+        if self.settings.tenant_id:
+            return f"{self.settings.tenant_id}:{ds.name}"
+        return ds.name
+
     def _ensure_connection(self, ds: DataSource) -> None:
         """惰性打开数据源连接（幂等；桥按 connectionId 复用连接池）。"""
         self._ensure_bridge()
-        if ds.name in self._opened:
+        cid = self._cid(ds)
+        if cid in self._opened:
             return
         with self._state_lock:
-            if ds.name in self._opened:
+            if cid in self._opened:
                 return
             result = self._request(
                 "connection.open",
                 {
-                    "connectionId": ds.name,
+                    "connectionId": cid,
                     "driverClassName": ds.driver_class,
                     "url": ds.jdbc_url,
                     "user": ds.username,
@@ -233,8 +244,8 @@ class JDBCManager:
                     "connectTimeoutSeconds": max(1, self.settings.connect_timeout),
                 },
             )
-            self._capabilities[ds.name] = result.get("capabilities") or {}
-            self._opened.add(ds.name)
+            self._capabilities[cid] = result.get("capabilities") or {}
+            self._opened.add(cid)
             self._touch(ds.name, connected=True)
             logger.info("已连接数据源 %s", ds.name)
 
@@ -370,7 +381,7 @@ class JDBCManager:
             result = self._request(
                 "query.execute",
                 {
-                    "connectionId": ds.name,
+                    "connectionId": self._cid(ds),
                     "sql": sql,
                     "pageSize": limit,
                     "maxRows": limit,
@@ -425,7 +436,7 @@ class JDBCManager:
         result = self._request(
             "query.execute",
             {
-                "connectionId": ds.name,
+                "connectionId": self._cid(ds),
                 "sql": sql,
                 "pageSize": page_size,
                 "maxRows": cap,
@@ -460,7 +471,7 @@ class JDBCManager:
         """测试连接并返回数据库产品信息。"""
         self._check_circuit(ds.name)
         self._ensure_connection(ds)
-        caps = self._capabilities.get(ds.name, {})
+        caps = self._capabilities.get(self._cid(ds), {})
         self._record_success(ds.name)
         return {
             "datasource": ds.name,
@@ -505,7 +516,7 @@ class JDBCManager:
 
     def _list_schemas_uncached(self, ds: DataSource) -> list[str]:
         self._ensure_connection(ds)
-        result = self._request("metadata.schemas", {"connectionId": ds.name})
+        result = self._request("metadata.schemas", {"connectionId": self._cid(ds)})
         return [str(s) for s in result.get("schemas", [])]
 
     def list_tables(
@@ -518,7 +529,7 @@ class JDBCManager:
         self, ds: DataSource, schema: str | None = None, search: str | None = None
     ) -> list[dict[str, str]]:
         self._ensure_connection(ds)
-        params: dict[str, Any] = {"connectionId": ds.name, "namePattern": "%"}
+        params: dict[str, Any] = {"connectionId": self._cid(ds), "namePattern": "%"}
         if schema:
             params["schema"] = schema
         if search:
@@ -545,7 +556,7 @@ class JDBCManager:
         self, ds: DataSource, table: str, schema: str | None = None
     ) -> list[dict[str, str]]:
         self._ensure_connection(ds)
-        params: dict[str, Any] = {"connectionId": ds.name, "table": table}
+        params: dict[str, Any] = {"connectionId": self._cid(ds), "table": table}
         if schema:
             params["schema"] = schema
         result = self._request("metadata.columns", params)
@@ -588,7 +599,7 @@ class JDBCManager:
             self._ensure_connection(ds)
             self._request(
                 "query.execute",
-                {"connectionId": ds.name, "sql": self._ping_sql(ds), "pageSize": 1, "maxRows": 1},
+                {"connectionId": self._cid(ds), "sql": self._ping_sql(ds), "pageSize": 1, "maxRows": 1},
             )
             alive, err = True, None
             self._record_success(ds.name)
@@ -640,7 +651,7 @@ class JDBCManager:
         self._ensure_connection(ds)
         result = self._request(
             "connection.beginTransaction",
-            {"connectionId": ds.name, "timeoutSeconds": max(0, self.settings.tx_timeout)},
+            {"connectionId": self._cid(ds), "timeoutSeconds": max(0, self.settings.tx_timeout)},
         )
         return {"datasource": ds.name, "active": True, **self._tx_status_fields(result)}
 
@@ -665,12 +676,12 @@ class JDBCManager:
         return result
 
     def commit_transaction(self, ds: DataSource) -> dict[str, Any]:
-        result = self._request("connection.commitTransaction", {"connectionId": ds.name})
+        result = self._request("connection.commitTransaction", {"connectionId": self._cid(ds)})
         self._record_success(ds.name)
         return {"datasource": ds.name, "status": result.get("status", "committed")}
 
     def rollback_transaction(self, ds: DataSource) -> dict[str, Any]:
-        result = self._request("connection.rollbackTransaction", {"connectionId": ds.name})
+        result = self._request("connection.rollbackTransaction", {"connectionId": self._cid(ds)})
         self._record_success(ds.name)
         return {"datasource": ds.name, "status": result.get("status", "rolled_back")}
 
@@ -684,7 +695,7 @@ class JDBCManager:
         return fields
 
     def transaction_status(self, ds: DataSource) -> dict[str, Any]:
-        result = self._request("connection.transactionStatus", {"connectionId": ds.name})
+        result = self._request("connection.transactionStatus", {"connectionId": self._cid(ds)})
         payload: dict[str, Any] = {
             "datasource": ds.name,
             "active": bool(result.get("active")),

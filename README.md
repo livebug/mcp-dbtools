@@ -181,15 +181,18 @@ sudo systemctl enable --now mcp-dbtools
 把桥独立部署成常驻服务，再让各 MCP 服务连它：
 
 ```bash
-# 1. 一台机器上跑共享桥服务（常驻，如 systemd 托管）
-java -jar bridge.jar --listen 19099
+# 1. 一台机器上跑共享桥服务（常驻，如 systemd 托管；--token 开启鉴权）
+java -jar bridge.jar --listen 19099 --token <secret>
 
-# 2. 各 MCP 服务的 .env 设置远程桥地址（不再各自 spawn）
+# 2. 各 MCP 服务连它，并各自设唯一租户标识（隔离连接归属）
 MCP_DBTOOLS_BRIDGE_URL=192.168.1.10:19099
+MCP_DBTOOLS_BRIDGE_TOKEN=<secret>
+MCP_DBTOOLS_TENANT_ID=svc-a          # 每个服务实例唯一，谁开的连接谁能用
 ```
 
-这样所有客户端共享同一个 JVM、同一套已加载的 JDBC 驱动和连接池。注意：共享桥意味着
-驱动版本/崩溃会互相影响，需在内网受信任环境使用（生产多租户还需鉴权，见架构文档）。
+这样所有客户端共享同一个 JVM、同一套已加载的 JDBC 驱动和连接池。共享桥支持鉴权
+（`--token`）与租户隔离（`tenant_id` 前缀），驱动版本/崩溃仍会互相影响，生产需按需
+为高风险租户单独 spawn 桥。
 
 ## 配置说明（config/datasources.json）
 

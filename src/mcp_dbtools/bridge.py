@@ -64,6 +64,8 @@ class BridgeClient:
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
         command: list[str] | None = None,
         remote: tuple[str, int] | None = None,
+        token: str | None = None,
+        tenant_id: str | None = None,
     ) -> None:
         self.jar_path = Path(jar_path)
         self.java = java or "java"
@@ -72,6 +74,10 @@ class BridgeClient:
         self._command = command
         # remote 模式：(host, port)；spawn 模式为 None
         self._remote = remote
+        # 连接共享桥服务时所需的共享密钥（--listen --token）
+        self._token = token
+        # 租户标识：共享桥上按此隔离连接归属（谁开的连接谁能用）
+        self._tenant_id = tenant_id
 
         self._proc: subprocess.Popen[Any] | None = None
         self._socket: socket.socket | None = None
@@ -185,11 +191,12 @@ class BridgeClient:
             raise BridgeNotRunningError("桥未连接")
 
         request_id = uuid.uuid4().hex
-        frame = json.dumps(
-            {"id": request_id, "method": method, "params": params or {}},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        frame_obj: dict[str, Any] = {"id": request_id, "method": method, "params": params or {}}
+        if self._token:
+            frame_obj["token"] = self._token
+        if self._tenant_id:
+            frame_obj["tenantId"] = self._tenant_id
+        frame = json.dumps(frame_obj, ensure_ascii=False, separators=(",", ":"))
         pending = _Pending()
         self._pending[request_id] = pending
 
