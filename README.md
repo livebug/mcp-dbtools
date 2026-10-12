@@ -175,6 +175,22 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now mcp-dbtools
 ```
 
+### 共享桥服务（多客户端共用一个 JVM，省内存/驱动）
+
+默认每个 MCP 服务各自 spawn 一个桥子进程（一个 JVM）。若多台机器/多个客户端要**共用一个桥**，
+把桥独立部署成常驻服务，再让各 MCP 服务连它：
+
+```bash
+# 1. 一台机器上跑共享桥服务（常驻，如 systemd 托管）
+java -jar bridge.jar --listen 19099
+
+# 2. 各 MCP 服务的 .env 设置远程桥地址（不再各自 spawn）
+MCP_DBTOOLS_BRIDGE_URL=192.168.1.10:19099
+```
+
+这样所有客户端共享同一个 JVM、同一套已加载的 JDBC 驱动和连接池。注意：共享桥意味着
+驱动版本/崩溃会互相影响，需在内网受信任环境使用（生产多租户还需鉴权，见架构文档）。
+
 ## 配置说明（config/datasources.json）
 
 ```json

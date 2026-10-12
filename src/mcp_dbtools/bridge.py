@@ -1,26 +1,31 @@
 """open-dbclient Java 桥的 NDJSON-RPC 客户端。
 
-通过 ``java -jar bridge.jar`` 启动零依赖 Java 桥子进程，用标准输入/输出上的
-newline-delimited JSON 帧与之通信：请求 ``{"id","method","params"}``、响应
+两种连接模式：
+
+- **spawn（默认）**：``java -jar bridge.jar`` 拉起一个桥子进程，走 stdin/stdout；
+- **remote**：连接一个已在别处运行的共享桥服务（``--listen <port>``），走 TCP socket，
+  多客户端共用一个 JVM。
+
+两种模式用同一套 newline-delimited JSON 帧：请求 ``{"id","method","params"}``、响应
 ``{"id","ok","result"|"error"}``、事件 ``{"type":"event","method","params"}``。
 
 设计要点（与 TypeScript 侧的 ``RpcChannel`` 对齐）：
 
-- **传输无关**：帧与请求/响应相关性在本模块内完成，进程管理与生命周期也在此收敛；
+- **传输无关**：帧与请求/响应相关性在本模块内完成，连接生命周期也在此收敛；
 - **线程安全**：写帧加锁，响应按 ``id`` 派发到各自的等待线程；
-- **stderr 独立排空**：JDBC 驱动会往 stderr 打横幅/日志，不排空会阻塞 JVM。
+- **stderr 独立排空**（仅 spawn 模式）：JDBC 驱动会往 stderr 打横幅/日志，不排空会阻塞 JVM。
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import socket
 import subprocess
 import threading
-import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -46,11 +51,11 @@ class BridgeError(Exception):
 
 
 class BridgeNotRunningError(Exception):
-    """桥进程未启动或已退出时发起的请求。"""
+    """桥未连接或已断开时发起的请求。"""
 
 
 class BridgeClient:
-    """管理与一个 Java 桥进程的对话。"""
+    """管理与一个 Java 桥的连接（子进程或远程服务）。"""
 
     def __init__(
         self,
@@ -58,13 +63,19 @@ class BridgeClient:
         java: str | None = None,
         request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
         command: list[str] | None = None,
+        remote: tuple[str, int] | None = None,
     ) -> None:
         self.jar_path = Path(jar_path)
         self.java = java or "java"
         self.request_timeout = request_timeout
         # 可覆盖启动命令（测试注入假桥进程、或包装 JVM 启动器）
         self._command = command
+        # remote 模式：(host, port)；spawn 模式为 None
+        self._remote = remote
+
         self._proc: subprocess.Popen[Any] | None = None
+        self._socket: socket.socket | None = None
+        self._read_stream: Iterable[str] | None = None
         self._write_lock = threading.Lock()
         self._pending: dict[str, _Pending] = {}
         self._listeners: list[Callable[[str, dict[str, Any]], None]] = []
@@ -77,9 +88,18 @@ class BridgeClient:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        """启动桥子进程并等待就绪。"""
-        if self._proc is not None and self._proc.poll() is None:
+        """建立连接：remote 模式连 TCP，spawn 模式拉起子进程。"""
+        if self.alive:
             return
+        if self._remote is not None:
+            self._start_remote()
+        else:
+            self._start_subprocess()
+        self._stopping.clear()
+        self._reader = threading.Thread(target=self._read_loop, name="bridge-reader", daemon=True)
+        self._reader.start()
+
+    def _start_subprocess(self) -> None:
         if self._command is not None:
             cmd = list(self._command)
         else:
@@ -100,18 +120,37 @@ class BridgeClient:
             raise BridgeNotRunningError(
                 f"找不到 Java 运行时 '{self.java}'，请安装 JDK/JRE 17+ 或设置 MCP_DBTOOLS_JAVA"
             ) from exc
-
-        self._stopping.clear()
-        self._reader = threading.Thread(target=self._read_loop, name="bridge-reader", daemon=True)
-        self._stderr_reader = threading.Thread(
-            target=self._drain_stderr, name="bridge-stderr", daemon=True
-        )
-        self._reader.start()
+        self._read_stream = self._proc.stdout
+        self._stderr_reader = threading.Thread(target=self._drain_stderr, name="bridge-stderr", daemon=True)
         self._stderr_reader.start()
         logger.info("启动 Java 桥 (pid=%s): %s", self._proc.pid, self.jar_path.name)
 
+    def _start_remote(self) -> None:
+        host, port = self._remote
+        try:
+            self._socket = socket.create_connection((host, port), timeout=10.0)
+            self._socket.settimeout(None)  # 读循环自己管理阻塞
+        except OSError as exc:
+            self._socket = None
+            raise BridgeNotRunningError(f"无法连接桥服务 {host}:{port}: {exc}") from exc
+        self._read_stream = self._socket.makefile("r", encoding="utf-8")
+        logger.info("连接远程桥服务 %s:%s", host, port)
+
     def close(self) -> None:
-        """优雅关闭桥：先 system.shutdown，超时则强杀。"""
+        """断开连接。
+
+        - spawn 模式：先 system.shutdown 优雅关闭【自己的】桥子进程，超时则强杀；
+        - remote 模式：只关自己的 socket，【不】关闭共享桥服务。
+        """
+        if self._remote is not None:
+            self._stopping.set()
+            if self._socket is not None:
+                try:
+                    self._socket.close()
+                except OSError:
+                    pass
+                self._socket = None
+            return
         if self._proc is None or self._proc.poll() is not None:
             self._proc = None
             return
@@ -130,6 +169,8 @@ class BridgeClient:
 
     @property
     def alive(self) -> bool:
+        if self._remote is not None:
+            return self._socket is not None
         return self._proc is not None and self._proc.poll() is None
 
     # ------------------------------------------------------------------
@@ -141,7 +182,7 @@ class BridgeClient:
     ) -> dict[str, Any]:
         """发送一个请求，阻塞等待响应并返回 result（dict）。"""
         if not self.alive:
-            raise BridgeNotRunningError("桥进程未运行")
+            raise BridgeNotRunningError("桥未连接")
 
         request_id = uuid.uuid4().hex
         frame = json.dumps(
@@ -174,14 +215,18 @@ class BridgeClient:
     # ------------------------------------------------------------------
 
     def _write_line(self, line: str) -> None:
+        if self._socket is not None:
+            self._socket.sendall((line + "\n").encode("utf-8"))
+            return
         assert self._proc is not None and self._proc.stdin is not None
         self._proc.stdin.write(line + "\n")
         self._proc.stdin.flush()
 
     def _read_loop(self) -> None:
-        assert self._proc is not None and self._proc.stdout is not None
+        stream = self._read_stream
+        assert stream is not None
         try:
-            for line in self._proc.stdout:
+            for line in stream:
                 line = line.strip()
                 if not line:
                     continue
@@ -193,11 +238,13 @@ class BridgeClient:
                 self._dispatch(frame)
         except (OSError, ValueError) as exc:
             if not self._stopping.is_set():
-                logger.error("桥输出流读取失败: %s", exc)
+                logger.error("桥连接读取失败: %s", exc)
         finally:
-            # 桥退出：唤醒所有等待中的请求
+            if self._remote is not None:
+                self._socket = None
+            # 连接断开：唤醒所有等待中的请求
             for pending in self._pending.values():
-                pending.fail(BridgeNotRunningError("桥进程已退出"))
+                pending.fail(BridgeNotRunningError("桥连接已断开"))
             self._pending.clear()
 
     def _drain_stderr(self) -> None:

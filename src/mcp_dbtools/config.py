@@ -153,9 +153,10 @@ class Settings:
     log_max_bytes: int = 10 * 1024 * 1024  # 单日志文件最大字节数（超过轮转 .1/.2/...）
     log_backup_count: int = 5              # 日志轮转保留备份份数
     # ---- Java 桥 ----
-    bridge_jar: str = "bridge.jar"          # open-dbclient Java 桥 jar 路径
+    bridge_jar: str = "bridge.jar"          # open-dbclient Java 桥 jar 路径（spawn 模式用）
     java: str = "java"                      # Java 可执行文件（JRE/JDK 17+）
     bridge_timeout: float = 120.0           # 桥请求默认超时（秒）
+    bridge_url: str | None = None           # 远程共享桥地址 "host:port"（--listen 模式）；不设置则 spawn 本地桥
     datasources: list[DataSource] = field(default_factory=list)
 
 
@@ -219,6 +220,7 @@ def load_settings() -> Settings:
         bridge_jar=env.get("MCP_DBTOOLS_BRIDGE_JAR", "bridge.jar"),
         java=env.get("MCP_DBTOOLS_JAVA", "java"),
         bridge_timeout=float(env.get("MCP_DBTOOLS_BRIDGE_TIMEOUT", "120")),
+        bridge_url=env.get("MCP_DBTOOLS_BRIDGE_URL") or None,
     )
 
     raw = _load_json(cfg.config_path)

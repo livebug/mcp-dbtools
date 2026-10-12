@@ -28,6 +28,23 @@ logger = logging.getLogger(__name__)
 _DB2_PING_SQL = "SELECT 1 FROM SYSIBM.SYSDUMMY1"
 _PING_SQL = "SELECT 1"
 
+
+def _parse_bridge_url(url: str) -> tuple[str, int]:
+    """解析桥地址 "host:port"（可含 scheme），返回 (host, port)。"""
+    raw = url.strip()
+    if "://" in raw:
+        raw = raw.split("://", 1)[1]
+    host, sep, port_s = raw.rpartition(":")
+    if not sep:
+        raise JDBCError(f"桥地址格式错误（应为 host:port）: {url}")
+    try:
+        port = int(port_s)
+    except ValueError as exc:
+        raise JDBCError(f"桥端口格式错误: {port_s}") from exc
+    if not 0 < port < 65536:
+        raise JDBCError(f"桥端口超出范围: {port}")
+    return host or "127.0.0.1", port
+
 # 桥错误码 → 控制面用户可读中文（桥内部消息是英文，这里做一层本地化）
 _BRIDGE_ERROR_MESSAGES = {
     "TRANSACTION_ACTIVE": "数据源已有活动事务，请先 commit 或 rollback",
@@ -139,8 +156,9 @@ class JDBCManager:
 
     def __init__(self, settings: Settings):
         self.settings = settings
+        remote = _parse_bridge_url(settings.bridge_url) if settings.bridge_url else None
         self._bridge = BridgeClient(
-            settings.bridge_jar, java=settings.java, request_timeout=settings.bridge_timeout
+            settings.bridge_jar, java=settings.java, request_timeout=settings.bridge_timeout, remote=remote
         )
         self._bridge_started = False
         self._opened: set[str] = set()

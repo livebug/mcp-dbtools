@@ -3,6 +3,15 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.4.0] - 2026-10-12
+
+### 变更
+
+- **支持连接远程共享桥服务**：新增 `MCP_DBTOOLS_BRIDGE_URL`（`host:port`）。设置后 MCP 服务
+  连接已部署的共享桥（`bridge.jar --listen <port>`），多客户端共用一个 JVM/驱动/连接池，而不再
+  各自 spawn 桥子进程；不设置则维持本地 spawn 行为。`bridge.py` 的 `BridgeClient` 增加
+  `remote=(host,port)` 连接模式（断开只关自己的 socket，不关共享桥）。
+
 ## [1.3.0] - 2026-10-12
 
 ### 变更
