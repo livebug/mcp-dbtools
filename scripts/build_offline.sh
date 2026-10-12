@@ -83,6 +83,12 @@ assemble_common() {
   cp .env.example "$PKG/.env.example"
   cp config/datasources.json.example "$PKG/config/datasources.json.example"
   cp -n drivers/*.jar "$PKG/drivers/" 2>/dev/null || true
+  if [ -f "$ROOT/bridge.jar" ]; then
+    cp "$ROOT/bridge.jar" "$PKG/bridge.jar"
+    echo "    已打包 Java 桥: bridge.jar ($(du -h "$ROOT/bridge.jar" | cut -f1))"
+  else
+    echo "    [WARN] 未找到 bridge.jar（Java 桥）。请先运行 bash scripts/build_bridge.sh，否则部署后无法连库"
+  fi
   cp -r scripts/sql/. "$PKG/scripts/sql/" 2>/dev/null || true
   cp scripts/encrypt_password.py "$PKG/scripts/encrypt_password.py"
   cp -r docs/. "$PKG/docs/" 2>/dev/null || true

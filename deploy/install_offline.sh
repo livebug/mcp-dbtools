@@ -7,7 +7,7 @@
 #   bash mcp-dbtools-offline/install.sh [安装目录，默认 /opt/mcp-dbtools]
 #
 # 依赖:
-#   - JRE/JDK 11+（jaydebeapi/JPype 需要 JVM；JPype 1.5+ 不支持 Java 8）
+#   - JRE/JDK 17+（Java 桥 bridge.jar 需要）
 #   - pm2（Node.js）
 # =============================================================
 set -euo pipefail
@@ -34,21 +34,17 @@ fi
 python3 -V
 
 if ! command -v java >/dev/null 2>&1; then
-  echo "[ERROR] 未检测到 Java 运行时（JRE/JDK 11+），JPype/jaydebeapi 需要 JVM。请先安装:"
+  echo "[ERROR] 未检测到 Java 运行时（JRE/JDK 17+），Java 桥 bridge.jar 需要。请先安装:"
   echo "  CentOS/RHEL : sudo yum install -y java-17-openjdk-headless"
   echo "  Ubuntu/Debian: sudo apt install -y openjdk-17-jre-headless"
   exit 1
 fi
-# JPype 1.5+ 要求 Java 11+（Java 8 会报 JavaVersion 错误），安装前做版本校验
+# Java 桥目标 Java 17（Java 8 的 java -version 输出 "1.8.0_xxx"，会被提取为 "1"）
 JAVA_MAJOR="$(java -version 2>&1 | head -1 | sed -E 's/.*version "([0-9]+).*/\1/')"
-if [ "$JAVA_MAJOR" = "1" ]; then
-  echo "[ERROR] 检测到 Java 8 及以下版本，JPype 1.5+ 需要 JDK 11+。请升级:"
+if [ -n "$JAVA_MAJOR" ] && [ "$JAVA_MAJOR" -lt 17 ] 2>/dev/null; then
+  echo "[ERROR] 检测到 Java $JAVA_MAJOR，Java 桥需要 JRE/JDK 17+。请升级:"
   echo "  CentOS/RHEL : sudo yum install -y java-17-openjdk-headless"
   echo "  Ubuntu/Debian: sudo apt install -y openjdk-17-jre-headless"
-  exit 1
-fi
-if [ -n "$JAVA_MAJOR" ] && [ "$JAVA_MAJOR" -lt 11 ] 2>/dev/null; then
-  echo "[ERROR] 检测到 Java $JAVA_MAJOR，JPype 1.5+ 需要 JDK 11+（推荐 17/21）。请升级后重试"
   exit 1
 fi
 if ! command -v pm2 >/dev/null 2>&1; then
@@ -61,6 +57,7 @@ java -version 2>&1 | head -1
 echo "==> 拷贝离线包文件"
 mkdir -p "$INSTALL_DIR"
 cp -r "$HERE"/wheels "$HERE"/dist "$HERE"/drivers "$HERE"/config "$INSTALL_DIR/"
+cp "$HERE"/bridge.jar "$INSTALL_DIR/" 2>/dev/null || echo "  [WARN] 离线包内缺少 bridge.jar（Java 桥），请用 MCP_DBTOOLS_BRIDGE_JAR 指向桥，或重新构建离线包"
 mkdir -p "$INSTALL_DIR/scripts"
 cp -r "$HERE"/scripts/sql "$INSTALL_DIR/scripts/" 2>/dev/null || true
 cp "$HERE"/requirements.txt "$INSTALL_DIR/"

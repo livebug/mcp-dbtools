@@ -1,10 +1,11 @@
 # =============================================================
 # mcp-dbtools 生产部署（Docker Compose）
-#   - mcp-dbtools : MCP 服务（HTTP 8000）
+#   - mcp-dbtools : MCP 服务（HTTP 8000，内含 Java 桥 bridge.jar）
 #   - opengauss   : GaussDB 家族测试库（内部 5432，外部 15432）
 #
-# 启动:
-#   cp .env.example .env   # 并按需修改密码
+# 启动（先构建 Java 桥，再 build）:
+#   bash scripts/build_bridge.sh      # 生成项目根 bridge.jar（需 node + JDK 17+）
+#   cp .env.example .env              # 并按需修改密码
 #   docker compose -f docker/compose.yml up -d --build
 #
 # 验证:
@@ -20,6 +21,7 @@ services:
     environment:
       MCP_DBTOOLS_CONFIG: /app/config/datasources.docker.json
       MCP_DBTOOLS_DRIVERS_DIR: /app/drivers
+      MCP_DBTOOLS_BRIDGE_JAR: /app/bridge.jar
       MCP_DBTOOLS_HOST: 0.0.0.0
       MCP_DBTOOLS_PORT: 8000
       MCP_DBTOOLS_TRANSPORT: streamable-http

@@ -1,14 +1,15 @@
 # =============================================================
 # mcp-dbtools 镜像构建
-# 运行环境: Python + OpenJDK（JPype/jaydebeapi 需要 JVM）
+# 运行环境: Python + OpenJDK（JDBC 走 Java 桥 bridge.jar，需 JRE 17+）
 # =============================================================
 FROM python:3.12-slim-bookworm AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    MCP_DBTOOLS_BRIDGE_JAR=/app/bridge.jar
 
-# JRE 用于加载 JDBC 驱动
+# JRE 用于运行 Java 桥 bridge.jar（数据面，由 MCP 服务 spawn）
 RUN apt-get update && apt-get install -y --no-install-recommends \
         openjdk-17-jre-headless \
         curl \
@@ -20,6 +21,9 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install .
+
+# Java 桥（构建前先 bash scripts/build_bridge.sh 生成项目根 bridge.jar）
+COPY bridge.jar ./
 
 # 配置、驱动、脚本
 COPY config ./config

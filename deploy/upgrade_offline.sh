@@ -15,7 +15,7 @@
 #
 # 依赖:
 #   - 旧版本已按 install.sh 部署在目标目录
-#   - JRE/JDK 11+、pm2 或 systemd
+#   - JRE/JDK 17+、pm2 或 systemd
 # =============================================================
 set -euo pipefail
 
@@ -67,6 +67,8 @@ cp -r "$HERE/wheels" "$INSTALL_DIR/wheels"
 # JDBC 驱动增量合并：保留用户已有 jar，补充新包内的 jar
 mkdir -p "$INSTALL_DIR/drivers"
 cp -n "$HERE"/drivers/*.jar "$INSTALL_DIR/drivers/" 2>/dev/null || true
+# Java 桥：新包内的 bridge.jar 覆盖旧版（桥版本随包更新）
+cp "$HERE"/bridge.jar "$INSTALL_DIR/bridge.jar" 2>/dev/null || echo "  [WARN] 离线包内缺少 bridge.jar（Java 桥），将沿用旧桥"
 # 脚本目录（sql 脚本 + 密码工具）
 mkdir -p "$INSTALL_DIR/scripts"
 cp -r "$HERE"/scripts/sql/. "$INSTALL_DIR/scripts/sql/" 2>/dev/null || true

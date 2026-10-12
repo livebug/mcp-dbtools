@@ -5,10 +5,11 @@
 #   2) python3 -m venv /opt/mcp-dbtools/.venv && \
 #      /opt/mcp-dbtools/.venv/bin/pip install -r requirements.txt
 #   3) 拷贝 .env.example 为 .env 并修改
-#   4) python scripts/download_drivers.py
-#   5) sudo cp deploy/mcp-dbtools.service /etc/systemd/system/
-#   6) sudo systemctl daemon-reload && sudo systemctl enable --now mcp-dbtools
-#   7) 验证: curl http://<服务器IP>:8000/health
+#   4) bash scripts/build_bridge.sh   # 构建 Java 桥 bridge.jar（需 node + JDK 17+）
+#   5) python scripts/download_drivers.py
+#   6) sudo cp deploy/mcp-dbtools.service /etc/systemd/system/
+#   7) sudo systemctl daemon-reload && sudo systemctl enable --now mcp-dbtools
+#   8) 验证: curl http://<服务器IP>:8000/health
 # =============================================================
 [Unit]
 Description=mcp-dbtools MCP Database Tools (JDBC)

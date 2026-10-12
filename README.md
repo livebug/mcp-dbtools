@@ -116,17 +116,20 @@ pip install -e .
 cp config/datasources.json.example config/datasources.json
 cp .env.example .env                 # 按需修改密码
 
-# 3. 下载 JDBC 驱动（openGauss/GaussDB）
+# 3. 构建 Java 桥 bridge.jar（数据面，JDBC 访问靠它；需 node + JDK 17+）
+bash scripts/build_bridge.sh          # 从并排的 open-dbclient 仓库构建，产物放到项目根
+
+# 4. 下载 JDBC 驱动（openGauss/GaussDB）
 python scripts/download_drivers.py
 
-# 4. 启动 HTTP 服务
+# 5. 启动 HTTP 服务（会自动 spawn Java 桥子进程）
 python -m mcp_dbtools --transport streamable-http
 # 服务地址: http://<服务器IP>:8000/mcp
 
-# 5. 验证
+# 6. 验证
 curl http://127.0.0.1:8000/health
 
-# 6. 用演示客户端远程调用
+# 7. 用演示客户端远程调用
 python scripts/mcp_client_demo.py --url http://127.0.0.1:8000/mcp
 ```
 
@@ -146,7 +149,8 @@ docker exec gaussdb bash -c \
 适用于**无法访问外网**的内网服务器（无 Docker 或不允许 Docker）：
 
 ```bash
-# 外网构建机：生成离线包（项目 wheel + 依赖 + JDBC 驱动 + 配置）
+# 外网构建机：先构建 Java 桥，再生成离线包（wheel + 依赖 + bridge.jar + JDBC 驱动 + 配置）
+bash scripts/build_bridge.sh             # 构建 bridge.jar（需 node + JDK 17+）
 bash scripts/build_offline.sh            # 产物 mcp-dbtools-offline-*.tar.gz
 
 # 内网机：拷贝解压并安装（建 venv、离线装依赖、pm2 启动）
@@ -190,7 +194,7 @@ sudo systemctl enable --now mcp-dbtools
 }
 ```
 
-- `type`: `gaussdb` / `opengauss` / `postgresql` 走 information_schema 方言；`tdh` / `hive` / `inceptor` 走 `SHOW DATABASES` 等 Hive 方言。
+- `type`: 仅用于健康探测的 ping 语句（`db2` 用 `SELECT 1 FROM SYSIBM.SYSDUMMY1`，其余 `SELECT 1`）；元数据一律走 JDBC `DatabaseMetaData` 能力探测，无需按库配方言。
 - `password` 支持 `{ENC:...}` **加密存储**（AES-256-GCM，用 `MCP_DBTOOLS_SECRET_KEY` 解密，推荐），也兼容 `{ENV:VAR}` 从环境变量注入。生成加密串：`echo -n "明文" | python scripts/encrypt_password.py --stdin`。
 - 可用环境变量见 `.env.example`（`MCP_DBTOOLS_HOST/PORT/TRANSPORT/AUTH_TOKEN/CONFIG/DRIVERS_DIR/MAX_ROWS` 等）。
 
