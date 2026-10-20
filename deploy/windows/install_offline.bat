@@ -42,7 +42,7 @@ if errorlevel 1 (
 )
 "%PY%" -c "import sys; print('  - Python', sys.version.split()[0], '->', sys.executable)"
 
-echo [2/5] 检查 Java（JPype 需要 JVM 11+）...
+echo [2/5] 检查 Java（Java 桥 bridge.jar 需要 JRE 17+）...
 set "SYS_JAVA="
 set "JMAJ="
 java -version >nul 2>&1 && set "SYS_JAVA=1"
@@ -50,8 +50,8 @@ if defined SYS_JAVA (
     for /f "tokens=3" %%v in ('java -version 2^>^&1 ^| findstr /i version') do set "JV=%%~v"
     for /f "tokens=1 delims=." %%m in ("%JV%") do set "JMAJ=%%m"
 )
-REM JPype 1.5+ 不支持 Java 8（java -version 显示 1.8.x），此时也改用包内 JRE
-if defined JMAJ if %JMAJ% LSS 11 set "SYS_JAVA="
+REM Java 8 显示 1.8.x，低于 17 一律改用包内便携 JRE
+if defined JMAJ if %JMAJ% LSS 17 set "SYS_JAVA="
 if not defined SYS_JAVA (
     if exist "runtime\jre\bin\server\jvm.dll" (
         set "JAVA_HOME=%~dp0runtime\jre"
@@ -62,8 +62,8 @@ if not defined SYS_JAVA (
     )
 )
 if not defined SYS_JAVA (
-    echo 错误：未检测到可用的 Java（JDK/JRE 11+；JPype 1.5+ 不支持 Java 8）
-    echo       请安装 JDK/JRE 11+ 后重试，或改用自带运行时的自包含包：
+    echo 错误：未检测到可用的 Java（需 JRE/JDK 17+，Java 桥 bridge.jar 依赖）
+    echo       请安装 JRE/JDK 17+ 后重试，或改用自带运行时的自包含包：
     echo         bash scripts/build_offline.sh --platform windows --self-contained
     pause & exit /b 1
 )

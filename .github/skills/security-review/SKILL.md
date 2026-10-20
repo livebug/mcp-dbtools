@@ -24,7 +24,9 @@ user-invocable: true
 ### 2. 访问控制
 - [ ] 已设置 `MCP_DBTOOLS_AUTH_TOKEN`（未设置则 `/mcp` 免鉴权，仅适合内网调试）
 - [ ] 对外暴露时建议 **HTTPS 或内网**（token 明文比较，不适用公网裸 HTTP）
-- [ ] `/metrics`、`/audit/api`、`/logs/api`、`/export/{id}/download` 需鉴权（默认已保护）
+- [ ] `/metrics`、`/api/v1/*`（含 `audit` / `logs` / `exports/{id}/download`）需鉴权（默认已保护）
+- [ ] 远程形态 `MCP_DBTOOLS_MODE=remote`：强制 Token，且数据源写接口默认只读
+- [ ] `/ui` 仅页面外壳免鉴权，数据接口仍在 `/api/v1` 保护下（确认没有把数据塞进页面）
 
 ### 3. 限流与防滥用
 - [ ] `MCP_DBTOOLS_RATE_LIMIT_ENABLED=true`（默认）

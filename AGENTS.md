@@ -1,7 +1,7 @@
 # mcp-dbtools 项目指引（AI Rules）
 
 > 本文件为在此仓库工作的 AI 助手（Copilot / Claude 等）提供项目级规则。
-> 详细操作手册见 `docs/使用说明.md`；版本历史见 `CHANGELOG.md`。
+> 文档索引见 `docs/README.md`；详细操作手册见 `docs/使用说明.md`；版本历史见 `CHANGELOG.md`。
 
 ## 项目是什么
 

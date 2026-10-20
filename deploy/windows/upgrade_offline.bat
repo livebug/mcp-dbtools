@@ -49,7 +49,7 @@ if errorlevel 1 (
 )
 
 REM ---------- 0. 检查服务是否在运行 ----------
-REM Windows 上运行中的进程会锁定 .venv 内的 .pyd（jpype 等），导致 pip 覆盖失败
+REM Windows 上运行中的进程会锁定 .venv 内的文件（原生扩展、dll 等），导致 pip 覆盖失败
 pm2 describe mcp-dbtools >nul 2>&1
 if %errorlevel%==0 (
     echo [警告] 检测到 mcp-dbtools 仍在运行。

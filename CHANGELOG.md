@@ -7,6 +7,12 @@
 
 ### 变更
 
+- **文档梳理**：根 `README.md` 由 574 行收敛到 267 行（重复的部署/安全/导出/客户端细节移入
+  `docs/使用说明.md` 并通过链接引用），新增 `docs/README.md` 文档索引（读者视角 + 阅读顺序 +
+  单一事实来源约定）。修正 Windows 安装/升级脚本中残留的 JPype 文案（统一为 JRE 17+）。
+- **项目减负**：移除误提交的 `exports/*.txt` 测试产物（`exports/` 改为整体忽略），清理
+  构建缓存与空 `dist/` 目录；文档中的 `test_dialects.py` 等失效路径同步修正。
+
 - **项目分层重构**：新增 `app.py`（ASGI 装配）与三个包 —— `api/`（REST 分组）、`web/`（Web
   控制台）、`services/`（与传输无关的业务逻辑）。`server.py` 瘦身为 CLI 入口；删除
   `home_page.py` / `audit_page.py` / `logs_page.py` / `datasources_page.py` 四个"Python 拼 HTML"

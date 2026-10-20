@@ -1,237 +1,150 @@
 # mcp-dbtools
 
-> **v1.3.0** · 生产可用稳定版 · [更新日志](CHANGELOG.md)
+> **v1.5.0** · 数据库 MCP 服务：**MCP 工具 + REST API + Web 控制台** · [更新日志](CHANGELOG.md)
 
-基于 **Python + JDBC** 的数据库 MCP（Model Context Protocol）服务，用于通过 LLM 客户端查询数据库。
+通过 JDBC 把 GaussDB / openGauss、TDH Inceptor、Hive、DB2、MySQL、PostgreSQL 等数据库
+开放给 LLM 客户端（MCP），同时提供 REST API 与 Web 控制台供人使用、供系统对接。
+JDBC 访问由 **open-dbclient Java 桥子进程**（NDJSON-RPC，`bridge.jar`）完成，Python 侧不内嵌 JVM。
 
-> 📖 **完整使用操作说明（部署/配置/工具/排错）：见 [docs/使用说明.md](docs/使用说明.md)**
-> 🏗 **架构与 API 规范（分层 / 路由表 / local & remote 部署 / 迁移对照）：见 [docs/架构设计.md](docs/架构设计.md)**
-> ⚖️ **技术选型（Node.js vs Python）：见 [docs/技术选型-nodejs-vs-python.md](docs/技术选型-nodejs-vs-python.md)**
+**文档导航**
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/架构设计.md](docs/架构设计.md) | 分层、local/remote 拓扑、路由总表、API 分组与错误码、迁移对照 |
+| [docs/使用说明.md](docs/使用说明.md) | 部署、配置、工具、监控、排错（运维手册） |
+| [docs/二次开发指南.md](docs/二次开发指南.md) | 内网离线环境改源码、跑测试 |
+| [docs/技术选型-nodejs-vs-python.md](docs/技术选型-nodejs-vs-python.md) | 为什么是 Python（含迁移路线） |
 
 ## 功能特性
 
-- **多数据源**：GaussDB / openGauss / TDH Inceptor / Hive / DB2 / MySQL / PostgreSQL 兼容库（JDBC 能力探测自动适配，无方言硬编码）
-- **安全**：Bearer 鉴权 · 写操作二次确认 · 密码加密存储（`{ENC:...}` AES-256-GCM）· 熔断 · 按 IP 限流 · 行数上限
-- **并发与性能**：JDBC 连接池 · 工具异步化 · 元数据 TTL 缓存
-- **可观测性**：审计（JSONL 轮转 + SQLite）· Web 控制台 `/ui/` · REST API `/api/v1` · 监控 `/metrics` · 健康检查 `/health`
-- **可发现性**：MCP 能力自描述（`/api/v1/mcp/tools` 返回工具与参数 schema，控制台 `/ui/tools`）
-- **运维**：内网 pm2 离线部署 · systemd 单元 · 异步大数据导出 · 显式事务
+- **多数据源**：JDBC 能力探测自动适配，无方言硬编码；新增数据库只加配置与驱动 jar
+- **双形态交付**：MCP（`/mcp`）+ REST（`/api/v1`）+ Web（`/ui`）共用同一服务层
+- **安全**：Bearer 鉴权 · 写操作 `confirm` 二次确认 · 密码 `{ENC:...}` 加密 · 熔断 · 按 IP 限流 · 行数上限
+- **可观测**：审计（JSONL 轮转 + SQLite）· `/metrics` · 执行历史 · Web 控制台
+- **可发现**：MCP 能力自描述（`/api/v1/mcp/tools` 返回参数 schema，`/ui/tools` 可浏览）
+- **运维友好**：内网离线包 · systemd/pm2 · 共享桥 · 异步大数据导出 · 显式事务
 
-## AI 协作（Agent 定制化）
+## 支持的数据库
 
-本仓库为 AI 助手（Copilot / Claude 等）提供定制化文件：
-
-- **`AGENTS.md`** — 项目规则（架构 / 代码约定 / 安全红线 / 提交要求），AI 始终遵循
-- **Skills**（`.github/skills/`，输入 `/` 可查看）：
-  - `offline-deploy`：内网离线部署打包
-  - `release`：版本发布流程（版本号 / CHANGELOG / 离线包 / tag）
-  - `add-datasource`：新增数据源（配置 / 驱动 / 密码加密 / 验证）
-  - `security-review`：安全配置审查
-- **Custom Agent**：`.github/agents/db-ops.agent.md` — 数据库 MCP 开发 / 排错专用代理（代理选择器可选）
-
-支持数据源：
-
-| 数据源 | 驱动 | JDBC URL 示例 |
+| 数据源 | 驱动类 | JDBC URL 示例 |
 | --- | --- | --- |
 | GaussDB / openGauss | `org.opengauss.Driver` | `jdbc:opengauss://host:5432/db` |
 | TDH Inceptor（星环） | `org.apache.hive.jdbc.HiveDriver` | `jdbc:hive2://host:10000/default` |
 | 其他 Hive 兼容 | `org.apache.hive.jdbc.HiveDriver` | `jdbc:hive2://...` |
-| 其他 PostgreSQL 兼容 | `org.postgresql.Driver` | `jdbc:postgresql://...` |
+| PostgreSQL 兼容 | `org.postgresql.Driver` | `jdbc:postgresql://...` |
 | DB2 | `com.ibm.db2.jcc.DB2Driver` | `jdbc:db2://host:50000/db` |
 | MySQL / MariaDB | `com.mysql.cj.jdbc.Driver` | `jdbc:mysql://host:3306/db?useUnicode=true&characterEncoding=UTF-8` |
 | SQLite（演示/测试） | `org.sqlite.JDBC` | `jdbc:sqlite:data/demo.db` |
 
-> DB2 驱动（`db2jcc4.jar`）受 IBM 许可限制无法自动下载，请手动放置到 `drivers/` 目录；
-> `type: db2` 仅用于健康探测的 ping 语句（`SELECT 1 FROM SYSIBM.SYSDUMMY1`）。
-> SQLite 用于本地演示：运行 `python scripts/create_sqlite_demo.py` 生成 `data/demo.db`（三张表、样例数据），
-> 仓库自带 `sqlite_demo` 数据源配置，不用装数据库就能跑通控制台 / API / MCP 全链路。
-
-- 服务部署在服务器上，远程客户端通过 **HTTP（MCP streamable-http）** 调用，也支持 SSE 与本地 stdio。
-- JDBC 桥接通过 **open-dbclient Java 桥子进程**（NDJSON-RPC，`bridge.jar`）。
+> DB2 驱动受 IBM 许可限制不能自动下载，需手工放入 `drivers/`；`type: db2` 只影响健康探测的 ping 语句。
+> SQLite 用于本地演示：`python scripts/create_sqlite_demo.py` 生成 `data/demo.db`，无需安装数据库即可跑通全链路。
 
 ## 架构
 
 ```mermaid
 flowchart LR
-    C[远程 MCP 客户端<br/>Claude / VS Code / 自定义] -- "HTTP POST /mcp<br/>MCP streamable-http" --> S[mcp-dbtools<br/>uvicorn + FastMCP]
+    C[LLM / MCP 客户端] -- "HTTP POST /mcp" --> S[mcp-dbtools<br/>uvicorn + FastMCP]
+    W[浏览器 / 业务系统] -- "/ui · /api/v1" --> S
     S -- "NDJSON-RPC<br/>spawn bridge.jar" --> B[Java 桥]
-    B -- "JDBC (jdbc:opengauss://)" --> G[GaussDB / openGauss 容器]
-    B -- "JDBC (jdbc:hive2://)" --> T[TDH Inceptor]
-    B -- "JDBC (jdbc:mysql://)" --> M[MySQL / MariaDB]
-    B -- "JDBC (jdbc:db2://)" --> D[DB2]
-    S --> H[/health 健康检查/]
+    B -- "JDBC" --> D[(GaussDB / Inceptor / DB2 / MySQL ...)]
+    S --> H[/health · /metrics/]
 ```
+
+- 传输层（`api/` `web/` MCP）只做协议适配，业务在 `jdbc.py` / `monitor.py` / `export.py` / `services/`
+- **本地**形态可用 stdio 或 localhost；**远程**形态强制 Token，可接共享桥
+- 桥的两种接法：随服务 spawn（默认），或连共享桥 `MCP_DBTOOLS_BRIDGE_URL`（多实例共用 JVM）
 
 ### HTTP 端点
 
-| 端点 | 鉴权 | 说明 |
-| --- | --- | --- |
-| `POST /mcp` | ✅ 需要 | **MCP 端点**，LLM 客户端调用工具 |
-| `GET /health` | ❌ 免鉴权 | 健康检查；`?deep=1` 真实 `SELECT 1` 探测各数据源 |
-| `GET /metrics` | ✅ 需要 | 监控 JSON（数据源状态 / 内存 / 工具统计 / 缓存 / 事务） |
-| `GET /ui/` | ❌ 页面 | **Web 控制台**（概览/数据源/查询/导出/审计/日志）；数据走 `/api/v1`，需 Token |
-| `GET /api/v1/system/*` | ✅ 需要 | 元信息 / 健康 / 指标 / 脱敏配置 |
-| `GET/POST/PUT/DELETE /api/v1/datasources*` | ✅ 需要 | 数据源维护（远程模式默认只读） |
-| `POST /api/v1/query/execute` | ✅ 需要 | 执行 SQL（写操作需 `confirm=true`，落审计） |
-| `GET /api/v1/query/history` | ✅ 需要 | 执行历史 |
-| `GET/POST /api/v1/exports*` | ✅ 需要 | 导出任务创建 / 查询 |
-| `GET /api/v1/exports/{id}/download` | ✅ 需要 | 导出文件下载 |
-| `GET /api/v1/audit/*` | ✅ 需要 | 审计记录 / 详情 / 汇总 |
-| `GET /api/v1/logs` | ✅ 需要 | 服务日志尾部 |
-| `GET /api/v1/metadata/*` | ✅ 需要 | 库/表/字段浏览 |
+| 分组 | 端点 | 鉴权 | 说明 |
+| --- | --- | --- | --- |
+| MCP | `POST /mcp` | ✅ | LLM 客户端调用工具 |
+| 运维 | `GET /health` | ❌ | 健康检查，`?deep=1` 逐个数据源真实探测 |
+| 运维 | `GET /metrics` | ✅ | 指标 JSON（数据源/内存/工具/缓存/事务） |
+| Web | `GET /ui/` | ❌ 外壳 | 控制台；数据走 `/api/v1`，需 Token |
+| system | `GET /api/v1/system/*` | ✅ | 元信息 / 健康 / 指标 / 脱敏配置 |
+| mcp | `GET /api/v1/mcp/*` | ✅ | 工具清单与参数 schema（自描述） |
+| datasources | `/api/v1/datasources*` | ✅ | 数据源增删改查与连通性测试 |
+| query | `POST /api/v1/query/execute` | ✅ | 执行 SQL（写操作需 `confirm=true`） |
+| metadata | `GET /api/v1/metadata/*` | ✅ | 库 / 表 / 字段浏览 |
+| exports | `/api/v1/exports*` | ✅ | 导出任务与文件下载 |
+| audit | `GET /api/v1/audit/*` | ✅ | 审计记录 / 详情 / 汇总 |
+| logs | `GET /api/v1/logs` | ✅ | 服务日志尾部 |
 
-> 统一响应包：成功 `{"ok": true, "data": ...}`，失败 `{"ok": false, "error": {"code", "message"}}`。
-> 完整分组与错误码见 [docs/架构设计.md](docs/架构设计.md) 第 6 节。
+统一响应包：成功 `{"ok": true, "data": ...}`，失败 `{"ok": false, "error": {"code", "message"}}`。
+分组细则与错误码见 [架构设计](docs/架构设计.md#6-rest-api-规范)。
 
 ## 目录结构
 
 ```
 mcp-dbtools/
 ├── src/mcp_dbtools/
-│   ├── server.py        # CLI 入口（参数 / 日志 / transport 选择）
+│   ├── server.py        # CLI 入口（参数 / 日志 / transport）
 │   ├── app.py           # ASGI 装配（MCP + /api/v1 + /ui + 中间件）
-│   ├── api/             # REST API 分组：system/datasources/query/metadata/exports/audit/logs
-│   ├── web/             # Web 控制台（零构建静态单页：/ui）
+│   ├── api/             # REST 分组：system mcp datasources query metadata exports audit logs
+│   ├── web/             # Web 控制台（零构建静态单页，随 wheel 分发）
 │   ├── services/        # 与传输无关的业务逻辑（数据源配置读写、日志读取）
-│   ├── bridge.py        # Java 桥客户端（spawn bridge.jar + NDJSON-RPC）
-│   ├── jdbc.py          # 数据访问（经桥做查询/元数据/事务/健康 + 熔断/缓存/脚本）
-│   ├── tools.py         # MCP 工具定义（20 个）
+│   ├── bridge.py        # Java 桥客户端（spawn / 共享桥，NDJSON-RPC）
+│   ├── jdbc.py          # 查询 / 元数据 / 事务 / 健康 + 熔断 / 缓存 / 脚本
+│   ├── tools.py         # 20 个 MCP 工具（描述一句话，参数由 schema 暴露）
 │   ├── config.py        # 配置加载（datasources.json + 环境变量 + 密码解密）
-│   ├── monitor.py       # 审计（JSONL 轮转 + SQLite）、执行历史、指标
+│   ├── monitor.py       # 审计（JSONL + SQLite）、执行历史、指标
 │   ├── export.py        # 异步导出 + 过期文件清理
-│   ├── crypto.py        # 密码加密存储（{ENC:...}）
+│   ├── crypto.py        # 密码加密（{ENC:...}）
 │   └── ratelimit.py     # 令牌桶限流中间件
-├── config/              # 数据源配置
+├── config/              # datasources.json（含 .example）
 ├── drivers/             # JDBC 驱动 jar（脚本下载 / 手工放置）
-├── scripts/
-│   ├── download_drivers.py    # 下载 openGauss / MySQL 驱动
-│   ├── encrypt_password.py    # 密码加密工具（生成 {ENC:...}）
-│   ├── mcp_client_demo.py     # HTTP 客户端演示
-│   ├── sql/                   # SQL 脚本根目录（execute_script 使用）
-│   └── java/                  # TDH 连接自测工具
-├── docker/              # Docker 部署与测试库
-├── deploy/              # pm2 / systemd 部署
-├── docs/                # 使用操作说明
-└── tests/               # 单元与集成测试
+├── scripts/             # 驱动下载、密码加密、SQLite 演示库、离线打包、Java 自测
+├── docker/              # Dockerfile、compose、测试库
+├── deploy/              # systemd / pm2 / 离线安装与升级脚本
+├── docs/                # 架构、使用说明、二次开发、技术选型
+├── tests/               # 单元测试（集成测试按需 skip）
+├── data/                # 运行期演示库（生成的 demo.db，已忽略）
+└── logs/ exports/       # 运行期日志与导出文件（已忽略）
 ```
 
 ## 环境要求
 
 - Python 3.10+（已测 3.13）
-- JRE/JDK 17+（运行 Java 桥 `bridge.jar`，已测 OpenJDK 21）
-- （部署）Docker 或 systemd Linux 服务器
-
-## 部署形态（本地 / 远程）
-
-同一份代码，靠 `MCP_DBTOOLS_MODE` 切换：
-
-| 形态 | 配置 | 场景 | 鉴权 | 数据源编辑 |
-| --- | --- | --- | --- | --- |
-| 本地 | `MCP_DBTOOLS_MODE=local`（默认） | 本机开发、单机内网、stdio 接 IDE | 可选 Token | 控制台可改 |
-| 远程 | `MCP_DBTOOLS_MODE=remote` + `MCP_DBTOOLS_AUTH_TOKEN=...` | 服务器集中部署、多客户端/多系统共用 | **强制 Token** | 默认只读（`MCP_DBTOOLS_ALLOW_REMOTE_EDIT=1` 放开） |
-
-- 远程形态建议放在 nginx/Caddy 之后终结 TLS，应用只监听内网端口；
-- 数据面两种接法：桥随服务 spawn（默认），或连接共享桥
-  （`MCP_DBTOOLS_BRIDGE_URL` + `BRIDGE_TOKEN` + `TENANT_ID`），多实例共用一个 JVM；
-- 远程模式未设置 Token 时服务**拒绝启动**（避免对外裸奔）。
-
-拓扑与请求链路见 [docs/架构设计.md](docs/架构设计.md) 第 3、9 节。
+- JRE/JDK 17+（运行 `bridge.jar`）
+- 构建桥：Node.js + JDK 17+（仅 `scripts/build_bridge.sh` 需要）
 
 ## 快速开始
 
 ```bash
-# 1. 安装依赖
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+# 1. 安装
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt && pip install -e .
 
-# 2. 生成配置
+# 2. 配置
 cp config/datasources.json.example config/datasources.json
-cp .env.example .env                 # 按需修改密码
+cp .env.example .env                 # 按需填密码 / Token
 
-# 3. 构建 Java 桥 bridge.jar（数据面，JDBC 访问靠它；需 node + JDK 17+）
-bash scripts/build_bridge.sh          # 从并排的 open-dbclient 仓库构建，产物放到项目根
+# 3. 构建 Java 桥（从并排的 open-dbclient 仓库，产物 bridge.jar）
+bash scripts/build_bridge.sh
 
-# 4. 下载 JDBC 驱动（openGauss/GaussDB/MySQL/SQLite）
+# 4. 下载驱动；可选：生成 SQLite 演示库
 python scripts/download_drivers.py
-
-# 4.1 可选：生成 SQLite 演示库（免装数据库，直接体验）
 python scripts/create_sqlite_demo.py
 
-# 5. 启动 HTTP 服务（会自动 spawn Java 桥子进程）
+# 5. 启动（自动 spawn 桥子进程）
 python -m mcp_dbtools --transport streamable-http
-# 服务地址: http://<服务器IP>:8000/mcp
 
 # 6. 验证
 curl http://127.0.0.1:8000/health
-
-# 7. 用演示客户端远程调用
-python scripts/mcp_client_demo.py --url http://127.0.0.1:8000/mcp
+# 控制台 http://127.0.0.1:8000/ui/ · MCP http://127.0.0.1:8000/mcp
 ```
 
-### 对接已有 GaussDB 测试库
-
-工作区已有的 `gaussdb` 容器（openGauss 5.0，端口 5432，库 `gaussdb`）已可直接使用。
-注意：openGauss 容器默认 `pg_hba.conf` 只允许本机 `trust`，需要允许远程访问：
+对接已有 openGauss 容器时，需先允许远程连接（默认 `pg_hba.conf` 只允许本机）：
 
 ```bash
 docker exec gaussdb bash -c \
   "echo 'host all all 0.0.0.0/0 sha256' >> /var/lib/opengauss/data/pg_hba.conf && kill -HUP 1"
 ```
 
-## 部署到生产
+## 配置
 
-### 内网离线部署（pm2，推荐）
-适用于**无法访问外网**的内网服务器（无 Docker 或不允许 Docker）：
-
-```bash
-# 外网构建机：先构建 Java 桥，再生成离线包（wheel + 依赖 + bridge.jar + JDBC 驱动 + 配置）
-bash scripts/build_bridge.sh             # 构建 bridge.jar（需 node + JDK 17+）
-bash scripts/build_offline.sh            # 产物 mcp-dbtools-offline-*.tar.gz
-
-# 内网机：拷贝解压并安装（建 venv、离线装依赖、pm2 启动）
-tar xzf mcp-dbtools-offline-*.tar.gz -C /opt/mcp-dbtools
-cd /opt/mcp-dbtools && bash deploy/install_offline.sh
-
-# 运维常用
-pm2 logs mcp-dbtools          # 日志
-pm2 reload mcp-dbtools        # 重启
-```
-
-前置：内网机需 JRE/JDK 17+（运行 Java 桥）与 Node.js/pm2；Python 版本必须与离线包一致
-（包内 `python-version-required.txt`，Windows 为 3.13 64 位）——依赖含 `cp3xx` 二进制 wheel，**不能跨版本**。
-**Python 3.8 无法运行**（`mcp` SDK 要求 `>=3.10`）：Windows 包内附带 CPython 官方安装器，可在低版本机器上并行安装 3.13。
-离线包内含**完整源码快照 `source/`** 与开发依赖 wheel，内网可直接 `pip install --no-index -e source` 做二次开发（见 `docs/二次开发指南.md`）。
-详细说明见 [docs/使用说明.md](docs/使用说明.md) 第 2 章。
-
-### systemd 部署
-```bash
-sudo cp deploy/mcp-dbtools.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now mcp-dbtools
-```
-
-### 共享桥服务（多客户端共用一个 JVM，省内存/驱动）
-
-默认每个 MCP 服务各自 spawn 一个桥子进程（一个 JVM）。若多台机器/多个客户端要**共用一个桥**，
-把桥独立部署成常驻服务，再让各 MCP 服务连它：
-
-```bash
-# 1. 一台机器上跑共享桥服务（常驻，如 systemd 托管；--token 开启鉴权）
-java -jar bridge.jar --listen 19099 --token <secret>
-
-# 2. 各 MCP 服务连它，并各自设唯一租户标识（隔离连接归属）
-MCP_DBTOOLS_BRIDGE_URL=192.168.1.10:19099
-MCP_DBTOOLS_BRIDGE_TOKEN=<secret>
-MCP_DBTOOLS_TENANT_ID=svc-a          # 每个服务实例唯一，谁开的连接谁能用
-```
-
-这样所有客户端共享同一个 JVM、同一套已加载的 JDBC 驱动和连接池。共享桥支持鉴权
-（`--token`）与租户隔离（`tenant_id` 前缀），驱动版本/崩溃仍会互相影响，生产需按需
-为高风险租户单独 spawn 桥。
-
-## 配置说明（config/datasources.json）
+数据源写在 `config/datasources.json`（密码用 `{ENC:...}` 或 `{ENV:变量}`）：
 
 ```json
 {
@@ -239,7 +152,6 @@ MCP_DBTOOLS_TENANT_ID=svc-a          # 每个服务实例唯一，谁开的连�
     {
       "name": "gaussdb_test",
       "type": "gaussdb",
-      "description": "Docker 测试库",
       "driver_class": "org.opengauss.Driver",
       "jdbc_url": "jdbc:opengauss://127.0.0.1:5432/gaussdb",
       "username": "gaussdb",
@@ -250,325 +162,106 @@ MCP_DBTOOLS_TENANT_ID=svc-a          # 每个服务实例唯一，谁开的连�
 }
 ```
 
-- `type`: 仅用于健康探测的 ping 语句（`db2` 用 `SELECT 1 FROM SYSIBM.SYSDUMMY1`，其余 `SELECT 1`）；元数据一律走 JDBC `DatabaseMetaData` 能力探测，无需按库配方言。
-- `password` 支持 `{ENC:...}` **加密存储**（AES-256-GCM，用 `MCP_DBTOOLS_SECRET_KEY` 解密，推荐），也兼容 `{ENV:VAR}` 从环境变量注入。生成加密串：`echo -n "明文" | python scripts/encrypt_password.py --stdin`。
-- 可用环境变量见 `.env.example`（`MCP_DBTOOLS_HOST/PORT/TRANSPORT/AUTH_TOKEN/CONFIG/DRIVERS_DIR/MAX_ROWS` 等）。
+环境变量（监听、鉴权、桥、限流、审计、导出等）见 [.env.example](.env.example) 与
+[使用说明 §3.2](docs/使用说明.md#32-环境变量env完整清单)。常用几项：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `MCP_DBTOOLS_MODE` | `local` | `local` / `remote`（remote 强制 Token） |
+| `MCP_DBTOOLS_AUTH_TOKEN` | 空 | Bearer Token；为空不启用鉴权 |
+| `MCP_DBTOOLS_BRIDGE_JAR` | `bridge.jar` | 桥 jar 路径 |
+| `MCP_DBTOOLS_BRIDGE_URL` | 空 | 共享桥 `host:port`，留空则本地 spawn |
+| `MCP_DBTOOLS_SECRET_KEY` | 空 | `{ENC:...}` 解密密钥 |
+
+## 部署形态
+
+| 形态 | 配置 | 场景 | 鉴权 |
+| --- | --- | --- | --- |
+| 本地 | `MODE=local`（默认） | 本机开发、单机内网、stdio 接 IDE | 可选 Token |
+| 远程 | `MODE=remote` + `AUTH_TOKEN` | 服务器集中部署、多客户端共用 | **强制 Token** |
+
+- 远程建议放在 nginx/Caddy 之后终结 TLS，应用只监听内网端口；
+- 远程模式默认禁止经 API/控制台改数据源，需要时 `MCP_DBTOOLS_ALLOW_REMOTE_EDIT=1`；
+- 生产部署（离线包 / systemd / pm2 / Docker / 共享桥）见 [使用说明 §2](docs/使用说明.md#2-快速部署)。
 
 ## MCP 工具
 
-| 工具 | 说明 |
+20 个工具，分 5 组：
+
+| 分组 | 工具 |
 | --- | --- |
-| `list_datasources` | 列出已配置数据源（不含密码） |
-| `test_connection` | 测试 JDBC 连接，返回产品与版本 |
-| `execute_query` | 执行 SQL（默认只读，写操作需 `confirm`；默认返回 300 行） |
-| `execute_script` | **执行 SQL 脚本文件**，支持 `${V_DATE}` 等参数占位符 |
-| `save_script` | **保存 SQL 脚本** 到脚本根目录（返回 `saved` 相对名 / `path` 绝对路径，可直接传给 `execute_script`） |
-| `list_schemas` | 列出 schema / 数据库 |
-| `list_tables` | 列出表（可按 schema、表名过滤） |
-| `describe_table` | 查看表结构 |
-| `get_status` | **监控**：数据源 JDBC 状态、JVM/进程内存、工具统计、运行时长 |
-| `get_datasource_status` | **监控**：单个数据源连接/查询/错误/平均耗时 |
-| `get_circuit_status` | **监控**：数据源熔断状态（是否熔断、失败次数、冷却剩余） |
-| `get_execution_history` | **审计**：查询工具/SQL 执行历史（按工具、成败过滤） |
-| `start_export` | **大数据量异步导出**：发起导出（自定义分隔符）→ 返回 `export_id` |
-| `get_export_status` | **导出**：轮询导出任务状态（pending/running/succeeded/failed） |
-| `list_exports` | **导出**：列出全部导出任务及下载地址 |
-| `begin_transaction` | **事务**：在数据源开启事务（独占连接，关闭自动提交） |
-| `execute_in_transaction` | **事务**：在活动事务内执行 SQL（不自动提交） |
-| `commit_transaction` | **事务**：提交并结束事务 |
-| `rollback_transaction` | **事务**：回滚并结束事务 |
-| `get_transaction_status` | **事务**：查询活动事务状态与已持续时间 |
+| 连接与元数据 | `list_datasources` `test_connection` `list_schemas` `list_tables` `describe_table` |
+| 查询与脚本 | `execute_query` `execute_script` `save_script` |
+| 事务 | `begin_transaction` `execute_in_transaction` `commit_transaction` `rollback_transaction` `get_transaction_status` |
+| 监控与审计 | `get_status` `get_datasource_status` `get_circuit_status` `get_execution_history` |
+| 导出 | `start_export` `get_export_status` `list_exports` |
 
-> 参数 schema 不用查文档：`GET /api/v1/mcp/tools` 返回全部工具与参数 JSON Schema（与 MCP
-> `tools/list` 同源），控制台 `/ui/tools` 可直接浏览、搜索。
+参数不用查文档：`GET /api/v1/mcp/tools` 返回 JSON Schema（与 MCP `tools/list` 同源），
+控制台 `/ui/tools` 可搜索、展开查看。写操作（DELETE/UPDATE/INSERT/DROP 等）默认拦截，
+必须 `confirm=true` 才执行并记审计。
 
-> 安全：工具只能访问 `datasources.json` 中预配置的连接，无法通过参数注入任意 JDBC URL。
+## Web 控制台
 
-## 性能与安全
-
-### 连接池与并发
-- 每个数据源维护 **JDBC 连接池**（默认 2 个连接，`MCP_DBTOOLS_POOL_SIZE` 可调），多客户并发请求复用连接。
-- 工具异步执行（线程池），不阻塞事件循环，**支持多客户端并发调用**。
-
-### SQL 注入与危险操作
-- MCP 本质是执行 SQL（LLM 查询数据库），无法对用户 SQL 做参数化防注入；通过**多层缓解**控制风险：
-  - 数据源白名单：工具只能连 `datasources.json` 预配置的连接；
-  - **写操作二次确认**：`DELETE/UPDATE/INSERT/DROP/TRUNCATE` 等默认拦截，需显式 `confirm=true` 才执行（并记审计）；
-  - `execute_script` 默认只读，脚本路径限定在脚本根目录内（防目录穿越）；
-  - **不暴露服务器路径**：`save_script` / `execute_script` 的响应与报错只给脚本根目录内的相对路径，
-    不输出服务器绝对路径（绝对路径作为 `script_path` 输入仍兼容）；
-  - `${VAR}` 参数替换：来源限 `params` 与环境变量，缺失即报错。
-- 全部调用写入审计（含调用方 IP / UA / SQL / 耗时）。
-
-### 熔断机制
-- 数据源**连续失败 N 次**（默认 3，可配）触发熔断，期间请求快速失败（不连库），冷却期后自动恢复（半开试探）。
-- 查看：`get_circuit_status` 工具或 `/metrics`。
-
-### 大数据量查询限制
-- `execute_query` **默认最多返回 300 行**（`MCP_DBTOOLS_MAX_ROWS`），`limit` 参数上限 10000（`MCP_DBTOOLS_MAX_ROWS_LIMIT`），**不支持一次性拉全量大数据**，防止 OOM 与接口超时。
-
-### 健康检查与自动重连
-- HTTP `/health` 返回每个数据源的健康状态；`/health?deep=1` 时对每个数据源**真实执行 `SELECT 1`** 探测（含延迟）。
-- 后台探活线程（`MCP_DBTOOLS_HEALTH_CHECK_INTERVAL`，默认 30s）定期探测各数据源，断连的连接在下次使用时**自动重建**（连接池丢弃坏连接并新建）。
-
-### 按客户端 IP 限流
-- 令牌桶限流（`MCP_DBTOOLS_RATE_LIMIT_QPS` 默认 10/s、突发 `BURST` 20），防止持有 token 的客户端无限调用打爆数据库；超限返回 HTTP 429。
-- `/health` 豁免限流（供负载均衡探测）。
-
-### 元数据结果缓存
-- `list_schemas` / `list_tables` / `describe_table` 结果缓存 `MCP_DBTOOLS_META_CACHE_TTL`（默认 60s），大幅降低 LLM 频繁查元数据的数据库压力；缓存命中/未命中统计见 `/metrics`。
-
-### 审计日志轮转
-- 审计 JSONL 单文件超过 `MCP_DBTOOLS_AUDIT_MAX_BYTES`（默认 10MB）自动轮转为 `.1/.2/...`，保留 `MCP_DBTOOLS_AUDIT_BACKUP_COUNT`（默认 5）份，防止磁盘膨胀。
-
-### 导出文件自动清理
-- 后台定期清理超龄（`MCP_DBTOOLS_EXPORT_KEEP_SECONDS`，默认 1 天）与超量（`MCP_DBTOOLS_EXPORT_MAX_FILES`，默认 100）的导出文件，防止 `exports/` 目录无限增长。
-
-### 显式事务
-- 多步写操作可用 `begin_transaction` → `execute_in_transaction`（多条）→ `commit_transaction` / `rollback_transaction` 原子执行，避免半途而废。
-- 同一数据源同时只允许一个活动事务；超过 `MCP_DBTOOLS_TX_TIMEOUT`（默认 300s）自动回滚并释放连接，防止连接泄漏。
-
-## 大数据量异步导出（start_export）
-
-当结果超过查询上限、需要完整数据时，使用**异步导出**（后台线程逐批写文件，不占内存）：
-
-```python
-# 1) 发起导出（只导出数据到文本文件，分隔符自定义，默认逗号）
-start_export(datasource="gaussdb_test", sql="SELECT ...", delimiter=",", filename="report")
-# -> {"id": "xxx", "status": "running", "download_url": "/api/v1/exports/xxx/download"}
-
-# 2) 轮询检查
-get_export_status(export_id="xxx")
-# -> {"status": "succeeded", "rows": 100000, "columns": [...], ...}
-
-# 3) 完成后下载（需 Token）
-GET /api/v1/exports/{id}/download
-```
-
-约定：
-- **只导出数据**（UTF-8 文本），字段用分隔符拼接（值含分隔符/引号/换行时按 RFC4180 加引号转义）；
-- **CSV / Excel 等格式由客户端自行处理**，服务端不生成二进制格式；
-- 分隔符可自定义（`\t`、`|`、`,` 等），表头行可选；
-- 导出上限 `MCP_DBTOOLS_EXPORT_MAX_ROWS`（默认 10 万）。
-
-## 脚本执行（execute_script）
-
-`execute_script` 可在服务器上执行 SQL 脚本文件，支持 `${VAR}` 参数占位符（如 `${V_DATE}`）。
-
-### 用法示例
-
-```python
-# MCP 客户端调用
-execute_script(
-    datasource="gaussdb_test",
-    script_path="demo_daily.sql",               # 脚本根目录内的相对路径（也可传绝对路径）
-    params={"V_DATE": "2026-08-08"},            # 替换脚本中的 ${V_DATE}
-)
-```
-
-推荐流程（先落盘再执行：可审计、可复用、可重跑）：
-
-```python
-saved = save_script(name="daily.sql", content="SELECT '${V_DATE}' AS d;", overwrite=True)
-# saved -> {"saved": "daily.sql", "bytes": 28, "overwritten": False}   # 不返回服务器绝对路径
-execute_script(datasource="gaussdb_test", script_path=saved["saved"], params={"V_DATE": "2026-08-08"})
-```
-
-> `script_path` 建议用 `save_script` 返回的 `saved`（脚本根目录内的相对路径）；绝对路径输入仍兼容，
-> 但响应与报错不会返回服务器绝对路径。
-
-返回每条语句的 `columns` / `rows` / `row_count` / `execution_time_ms` 及总耗时。示例脚本见 `scripts/sql/demo_daily.sql`。
-
-### 参数占位符规则
-- 脚本中的 `${VAR}` 会被替换；来源优先级：`params` → 环境变量 → 缺失则报错（列出缺少的参数名）。
-- 参数值统一转字符串插入。
-
-### 安全约束
-- 脚本文件必须位于脚本根目录内（默认 `scripts/sql`，可用 `MCP_DBTOOLS_SCRIPT_ROOT` 配置），防止目录穿越读取任意文件。
-- 默认 `read_only=true`，仅允许 `SELECT / SHOW / DESCRIBE / EXPLAIN / WITH` 语句；需要执行写操作时显式传 `read_only=false`（请谨慎，最终由数据库侧权限控制）。
-- **不泄露服务器路径**：`save_script` / `execute_script` 的响应与错误信息只返回脚本根目录内的**相对路径**
-  （如 `daily.sql`），不输出服务器绝对路径；报错中的目录提示也不会含绝对路径。绝对路径作为 `script_path`
-  输入仍然兼容（服务端日志保留绝对路径供运维排查）。
-- 多语句按分号拆分（忽略引号内分号与 `--` 行注释）；任一语句失败即停止后续。
-
-## 监控与审计
-
-### 监控指标
-- **JDBC 状态**：每个数据源 `connected` / `connected_at` / `last_active` / `query_count` / `error_count` / `rows_returned` / `total_query_time_ms` / `avg_query_time_ms`
-- **内存**：Python 进程 RSS（`memory_mb.process_rss`；JVM 堆在桥子进程内）
-- **执行耗时**：`execute_query` 返回 `execution_time_ms`；工具级统计见 `get_status`/`/metrics`
-
-### HTTP /metrics 端点
-运维采集用（JSON），默认开启：
-
-```bash
-curl http://<服务器IP>:8000/metrics
-# 返回: 数据源状态 / JVM 与进程内存 / 工具调用统计 / 元数据缓存命中 / 事务状态 / 运行时长
-```
-
-### 审计记录内容
-每次工具调用记录：时间、工具名、**客户端 IP / User-Agent**、参数（含完整 SQL，超长自动截断）、耗时、成败、错误信息。通过 ASGI 中间件自动采集访问 IP，随请求上下文写入审计。
-
-### Web 控制台（/ui/）
-内置零构建控制台（无外部依赖，适配内网离线环境），同时提供人工运维入口与 REST API：
-
-```bash
-# 浏览器打开（页面外壳免鉴权，首次进入弹窗输入 Token）
-http://<服务器IP>:8000/ui/
-```
+打开 `http://<服务器>:8000/ui/`（亮色默认，可切深色；Token 首次进入时弹窗输入）：
 
 | 页面 | 路由 | 能力 |
 | --- | --- | --- |
 | 概览 | `/ui/` | 健康状态、数据源健康表、工具调用统计 |
 | 数据源 | `/ui/datasources` | 增删改、连通性测试（远程只读模式隐藏写操作） |
-| 查询 | `/ui/query` | 选库执行 SQL、写操作二次确认、结果表格 |
-| 工具 | `/ui/tools` | 按组浏览 MCP 工具、参数 schema、搜索（读 `/api/v1/mcp/tools`） |
-| 导出 | `/ui/exports` | 创建导出任务、下载文件 |
+| 查询 | `/ui/query` | 选库执行 SQL、写操作确认、结果表格 |
+| 工具 | `/ui/tools` | 按组浏览工具与参数 schema |
+| 导出 | `/ui/exports` | 创建导出、下载文件 |
 | 审计 | `/ui/audit` | 按工具/关键字/成败筛选、分页 |
-| 日志 | `/ui/logs` | 尾部行数、关键字过滤、手动刷新 |
+| 日志 | `/ui/logs` | 尾部行数、关键字过滤 |
 
-控制台的数据全部走 `/api/v1/*`（统一响应包 + 稳定错误码），第三方系统可直接对接同一组接口；
-分组与参数见 [docs/架构设计.md](docs/架构设计.md) 第 6 节。
+## 监控与审计
 
-> 安全：启用 `MCP_DBTOOLS_AUTH_TOKEN` 后，`/api/v1/*`、`/mcp`、`/metrics` 均需携带
-> `Authorization: Bearer <token>`（控制台可用 Token 弹窗或 `?token=` 引导，Token 存 sessionStorage）。
-
-### 配置项（.env）
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `MCP_DBTOOLS_HISTORY_SIZE` | `500` | 内存执行历史条数 |
-| `MCP_DBTOOLS_AUDIT_FILE` | `logs/audit.jsonl` | 审计日志(JSONL)路径，留空关闭 |
-| `MCP_DBTOOLS_AUDIT_DB` | `logs/audit.db` | 审计 SQLite 库（审计页面数据源），空则禁用页面查询 |
-| `MCP_DBTOOLS_METRICS_ENABLED` | `true` | 是否开放 `/metrics` |
-
-> 提示：审计会记录 SQL 参数与访问 IP。若对敏感查询有顾虑，可关闭落盘（`MCP_DBTOOLS_AUDIT_FILE=`、`MCP_DBTOOLS_AUDIT_DB=`），仅保留内存历史。
+- **审计**：每次工具/API 调用记录时间、客户端 IP/UA、参数、耗时、成败；落
+  `logs/audit.jsonl`（10MB 轮转）与 `logs/audit.db`（SQLite，供审计页查询）。
+- **指标**：`GET /metrics`（需 Token）返回数据源状态、进程内存、工具统计、缓存命中、事务。
+- **日志**：`logs/app.log` 按大小轮转，控制台 `/ui/logs` 或 `tail -f` 查看。
+- **健康**：`/health` 默认读缓存，`?deep=1` 逐个数据源执行 ping。
 
 ## 客户端接入
 
-### 通用 MCP 客户端（HTTP）
-
-将 MCP 端点配置为 `http://<服务器IP>:8000/mcp`。以 Claude Desktop 为例：
+通用 MCP 客户端（Claude Desktop 等）：
 
 ```json
 {
   "mcpServers": {
     "dbtools": {
       "type": "http",
-      "url": "http://192.168.1.10:8000/mcp"
+      "url": "http://192.168.1.10:8000/mcp",
+      "headers": { "Authorization": "Bearer <TOKEN>" }
     }
   }
 }
 ```
 
-启用鉴权后需带请求头 `Authorization: Bearer <MCP_DBTOOLS_AUTH_TOKEN>`。
+本地调试可用 stdio：`python -m mcp_dbtools --transport stdio`。
+命令行示例：`python scripts/mcp_client_demo.py --url http://127.0.0.1:8000/mcp`。
 
-### 本地 stdio（开发调试）
-
-```bash
-python -m mcp_dbtools --transport stdio
-```
-
-## 服务器部署
-
-### 方式一：Docker Compose（推荐，需外网/内网镜像源）
+## 测试与开发
 
 ```bash
-cp .env.example .env
-docker compose -f docker/compose.yml up -d --build
-curl http://localhost:8000/health
+. .venv/bin/activate
+python -m pytest -q          # 单元测试；缺数据库/驱动的集成测试自动 skip
 ```
 
-### 方式二：systemd（裸机）
-
-见 `deploy/mcp-dbtools.service`，安装到 `/etc/systemd/system/` 后：
-
-```bash
-systemctl daemon-reload
-systemctl enable --now mcp-dbtools
-```
-
-### 方式三：内网离线 + pm2（生产推荐，无需外网）
-
-内网环境无法访问 PyPI / Docker Hub 时，通过**离线 pip 包 + pm2** 部署。
-
-#### ① 在【外网构建机】生成离线包
-
-```bash
-bash scripts/build_offline.sh --platform linux
-# 产物: mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
-# 内含: 项目 wheel + 运行时/开发依赖 wheel + 完整源码快照 source/ + JDBC 驱动 + pm2 配置 + 安装/升级脚本
-# Windows 包默认附带 CPython 官方安装器（--no-python 可关闭，省约 29 MB）：
-#   bash scripts/build_offline.sh --platform windows
-# Windows 裸机（目标机无 Python/JDK/Node）自包含包：包内带便携 Python + JRE 17
-#   bash scripts/build_offline.sh --platform windows --self-contained
-```
-
-> 构建机与内网机需**同为 Linux x86_64 + 相同 Python 主版本**（依赖含 manylinux 二进制 wheel，如 `pydantic-core`）。
-> 离线包 wheel 已锁定 manylinux2014（glibc 2.17+）平台标签，兼容 CentOS 7/8 等内网机。
-
-#### ② 拷贝到内网服务器并安装
-
-内网机需先具备：**JRE/JDK 17+**（运行 Java 桥）、**Node.js + pm2**。
-
-```bash
-# 上传离线包后
-tar xzf mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
-bash mcp-dbtools-offline-linux/install.sh      # 默认安装到 /opt/mcp-dbtools
-# 安装脚本会自动: 建 venv -> --no-index 离线安装 -> 生成 .env -> pm2 启动
-```
-
-#### ③ 修改内网配置并重启
-
-```bash
-vim /opt/mcp-dbtools/.env                            # 端口、鉴权 Token、密码
-vim /opt/mcp-dbtools/config/datasources.json         # 数据源 JDBC URL（内网地址）
-pm2 restart mcp-dbtools
-curl http://127.0.0.1:8000/health
-```
-
-#### ④ 升级已有安装
-
-```bash
-tar xzf mcp-dbtools-offline-linux-YYYYMMDD.tar.gz
-bash mcp-dbtools-offline-linux/upgrade.sh /opt/mcp-dbtools
-# 自动备份 .env / datasources.json / source（含二次开发改动）-> 强制重装项目 wheel -> 重启服务
-```
-Windows：解压新版 zip 后先 `pm2 stop mcp-dbtools`，再执行 `upgrade_offline.bat D:\mcp-dbtools`。
-
-#### ⑤ GitHub Actions 自动构建（可选）
-
-推送 `v*` tag 时，`.github/workflows/release.yml` 自动执行：跑测试 → 校验 tag 与版本号一致 →
-构建 Linux/Windows 离线包 → 生成 `SHA256SUMS.txt` → 创建 GitHub Release 并附上
-项目 wheel 与两个离线包。也可在 Actions 页手动触发（仅上传 Artifacts，不发 Release）。
-
-> GitHub Release 还会**自动附带 Source code (zip / tar.gz)** —— 纯源码包约 **0.4 MB**
-> （完整离线包 11 MB，其中 95% 是依赖 wheel）。内网机器不能访问 GitHub，产物仍需人工转运；
-> 若内网**只取源码**做二次开发，搬 0.4 MB 的源码包即可，依赖 wheel 等需要离线安装时再取。
-
-#### pm2 常用命令
-
-```bash
-pm2 start deploy/ecosystem.config.cjs   # 启动
-pm2 logs mcp-dbtools                    # 日志
-pm2 reload mcp-dbtools                  # 重启
-pm2 save && pm2 startup                 # 开机自启
-```
-
-pm2 配置见 `deploy/ecosystem.config.cjs`（可调端口、鉴权 Token、日志路径）。
-
-## 测试
-
-```bash
-# 单元测试（配置、方言）
-.venv/bin/python -m pytest tests/test_config.py tests/test_dialects.py -q
-
-# 集成测试（需要 GaussDB/openGauss 测试库在 127.0.0.1:5432）
-.venv/bin/python -m pytest tests/test_jdbc_integration.py -q
-```
+- 代码规范与提交约定见 [AGENTS.md](AGENTS.md)；
+- 新增数据源见 [.github/skills/add-datasource](.github/skills/add-datasource/SKILL.md)；
+- 离线打包见 [.github/skills/offline-deploy](.github/skills/offline-deploy/SKILL.md)。
 
 ## 常见问题
 
-- **`Invalid username/password` / 连接被拒**：检查目标库 `pg_hba.conf` 是否允许你的来源 IP（openGauss 默认仅本机）。
-- **`Task group is not initialized`**：需将 `mcp.streamable_http_app()` 作为顶层 ASGI app 运行（本实现已处理），不要二次挂载。
-- **TDH 连接失败**：先确保 Inceptor 的 HiveServer2 已启动（TDH 数据栈需在 Transwarp Manager 控制台部署），并用 `scripts/java/TdhTest.java` 验证端口与账号。
-- **SOCKS 代理导致 HTTP 客户端报错**：演示客户端已通过 `trust_env=False` 忽略环境代理；若自写客户端，可安装 `httpx[socks]` 或设置 `NO_PROXY`。
+- **`Invalid username/password` / 连接被拒**：检查 `pg_hba.conf` 是否允许来源 IP（openGauss 默认仅本机）。
+- **`Task group is not initialized`**：`mcp.streamable_http_app()` 必须作为顶层 ASGI app，不能二次 mount。
+- **`桥 jar 不存在`**：先 `bash scripts/build_bridge.sh`，或用 `MCP_DBTOOLS_BRIDGE_JAR` 指向已有 jar。
+- **TDH 连接失败**：确认 HiveServer2 已启动，可用 `scripts/java/TdhTest.java` 验证端口与账号。
+
+更多排错见 [使用说明 §9](docs/使用说明.md#9-常见问题faq)。
+
+## 开发协作（AI）
+
+仓库内置 AI 协作资产：`AGENTS.md`（项目规则）、`.github/skills/`（离线部署 / 发布 / 新增数据源 /
+安全审查）、`.github/agents/db-ops.agent.md`（数据库排错代理）。
