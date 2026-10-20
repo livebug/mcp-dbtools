@@ -1,4 +1,4 @@
-"""服务日志查看功能测试：tail_lines + /logs 页面与 API。"""
+"""服务日志查看功能测试：tail_lines + /ui 控制台与 /api/v1/logs。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from mcp_dbtools.config import DataSource, Settings
-from mcp_dbtools.logs_page import tail_lines
+from mcp_dbtools.services.logs import tail_lines
 
 
 def _ds(name="g"):
@@ -65,33 +65,34 @@ async def test_logs_page_and_api(tmp_path):
     logfile.write_text("line1\nERROR test-error\nline3", encoding="utf-8")
     settings = Settings(auth_token="tok", log_file=str(logfile), datasources=[_ds()])
 
-    from mcp_dbtools.server import build_app
+    from mcp_dbtools.app import build_app
 
     app = build_app(settings)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
-        # 页面免鉴权
-        r = await c.get("/logs")
+        # 控制台外壳免鉴权
+        r = await c.get("/ui/logs")
         assert r.status_code == 200
-        assert "服务日志" in r.text
+        assert "/ui/assets/app.js" in r.text
         # 数据接口需鉴权
-        r3 = await c.get("/logs/api", params={"action": "tail"})
+        r3 = await c.get("/api/v1/logs")
         assert r3.status_code == 401
         # 带 token 查询
         r2 = await c.get(
-            "/logs/api",
-            params={"action": "tail", "lines": "10"},
+            "/api/v1/logs",
+            params={"lines": "10"},
             headers={"Authorization": "Bearer tok"},
         )
         assert r2.status_code == 200
-        data = r2.json()
+        data = r2.json()["data"]
         assert "test-error" in data["content"]
         assert data["file"] == str(logfile)
         # 关键字过滤
         r4 = await c.get(
-            "/logs/api",
-            params={"action": "tail", "q": "ERROR"},
+            "/api/v1/logs",
+            params={"q": "ERROR"},
             headers={"Authorization": "Bearer tok"},
         )
-        assert "test-error" in r4.json()["content"]
-        assert "line1" not in r4.json()["content"]
+        data4 = r4.json()["data"]
+        assert "test-error" in data4["content"]
+        assert "line1" not in data4["content"]

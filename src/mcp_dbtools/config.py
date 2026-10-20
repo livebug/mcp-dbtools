@@ -111,6 +111,9 @@ class Settings:
     port: int = 8000
     transport: str = "streamable-http"
     auth_token: str | None = None
+    # ---- 部署形态 ----
+    mode: str = "local"              # local（本机/内网本地）| remote（对外远程服务）
+    allow_remote_edit: bool = False  # remote 模式下是否允许经 API/控制台修改数据源配置
     config_path: str = "config/datasources.json"
     drivers_dir: str = "drivers"
     max_rows: int = 300             # 单次查询默认返回行数上限（默认 300，防一次性拉大数据量）
@@ -185,6 +188,10 @@ def load_settings() -> Settings:
         port=int(env.get("MCP_DBTOOLS_PORT", "8000")),
         transport=env.get("MCP_DBTOOLS_TRANSPORT", "streamable-http").lower(),
         auth_token=env.get("MCP_DBTOOLS_AUTH_TOKEN") or None,
+        # 部署形态：remote 必须配 Token（对外服务不允许裸奔）
+        mode=(env.get("MCP_DBTOOLS_MODE", "local") or "local").lower(),
+        allow_remote_edit=env.get("MCP_DBTOOLS_ALLOW_REMOTE_EDIT", "false").lower()
+        in ("1", "true", "yes", "on"),
         config_path=env.get("MCP_DBTOOLS_CONFIG", "config/datasources.json"),
         drivers_dir=env.get("MCP_DBTOOLS_DRIVERS_DIR", "drivers"),
         max_rows=int(env.get("MCP_DBTOOLS_MAX_ROWS", "300")),
@@ -232,6 +239,14 @@ def load_settings() -> Settings:
         if not isinstance(ds_raw, dict):
             continue
         cfg.datasources.append(DataSource.from_dict(ds_raw, env=env))
+
+    if cfg.mode not in ("local", "remote"):
+        raise ConfigError(f"MCP_DBTOOLS_MODE 只能是 local 或 remote，当前为 '{cfg.mode}'")
+    if cfg.mode == "remote" and not cfg.auth_token:
+        raise ConfigError(
+            "远程模式（MCP_DBTOOLS_MODE=remote）必须设置 MCP_DBTOOLS_AUTH_TOKEN，"
+            "否则 MCP / API / 控制台对外完全无鉴权"
+        )
 
     if not cfg.datasources:
         raise ConfigError("未配置任何数据源，请检查 datasources.json")

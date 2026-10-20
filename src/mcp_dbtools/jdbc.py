@@ -707,7 +707,14 @@ class JDBCManager:
         return payload
 
     def all_transaction_status(self) -> list[dict[str, Any]]:
-        return [self.transaction_status(ds) for ds in self.settings.datasources]
+        """聚合事务状态：监控用途，任何数据源取不到都只降级为该条错误，不整体失败。"""
+        out: list[dict[str, Any]] = []
+        for ds in self.settings.datasources:
+            try:
+                out.append(self.transaction_status(ds))
+            except Exception as exc:  # noqa: BLE001 指标聚合不应因单库不可用而 500
+                out.append({"datasource": ds.name, "active": False, "error": str(exc)})
+        return out
 
     # ------------------------------------------------------------------
     # 关闭

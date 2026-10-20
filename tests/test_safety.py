@@ -116,7 +116,7 @@ def test_export_flow(tmp_path):
     lines = content.strip().splitlines()
     assert lines[0] == "id,name"
     assert "张三" in lines[1]
-    assert task["download_url"].endswith(f"/export/{task['id']}/download")
+    assert task["download_url"].endswith(f"/api/v1/exports/{task['id']}/download")
 
 
 def test_export_custom_delimiter_and_escape(tmp_path):

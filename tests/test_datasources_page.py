@@ -1,4 +1,4 @@
-"""数据源管理页单元测试：保存/加密/删除逻辑（无需真实数据库）。"""
+"""数据源配置存储单元测试：保存/加密/删除逻辑（无需真实数据库）。"""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import os
 import pytest
 
 from mcp_dbtools import crypto
-from mcp_dbtools import datasources_page as ds_page
+from mcp_dbtools.services import datasources as ds_page
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +24,7 @@ def cfg(tmp_path):
 
 
 def test_save_new_encrypts_password(cfg):
-    ok, msg = ds_page.api_save(cfg, {
+    ok, msg = ds_page.save(cfg, {
         "name": "db2_test", "type": "db2",
         "jdbc_url": "jdbc:db2://h:50000/sample",
         "driver_class": "com.ibm.db2.jcc.DB2Driver",
@@ -43,18 +43,18 @@ def test_save_new_encrypts_password(cfg):
 
 
 def test_save_duplicate_rejected(cfg):
-    ds_page.api_save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j", "driver_class": "d",
+    ds_page.save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j", "driver_class": "d",
                            "password": "x", "original": ""})
-    ok, msg = ds_page.api_save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j2",
+    ok, msg = ds_page.save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j2",
                                      "driver_class": "d", "password": "y", "original": ""})
     assert not ok
     assert "已存在" in msg
 
 
 def test_save_edit_keeps_password_when_blank(cfg):
-    ds_page.api_save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j", "driver_class": "d",
+    ds_page.save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j", "driver_class": "d",
                            "password": "secret", "original": ""})
-    ok, _ = ds_page.api_save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j2",
+    ok, _ = ds_page.save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j2",
                                    "driver_class": "d", "password": "", "original": "a"})
     assert ok
     raw = json.loads(open(cfg, encoding="utf-8").read())
@@ -65,25 +65,25 @@ def test_save_edit_keeps_password_when_blank(cfg):
 
 def test_save_without_secret_rejected(monkeypatch, cfg):
     monkeypatch.delenv("MCP_DBTOOLS_SECRET_KEY", raising=False)
-    ok, msg = ds_page.api_save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j",
+    ok, msg = ds_page.save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j",
                                      "driver_class": "d", "password": "x", "original": ""})
     assert not ok
     assert "SECRET_KEY" in msg
 
 
 def test_delete(cfg):
-    ds_page.api_save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j", "driver_class": "d",
+    ds_page.save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j", "driver_class": "d",
                            "password": "x", "original": ""})
-    ok, _ = ds_page.api_delete(cfg, "a")
+    ok, _ = ds_page.delete(cfg, "a")
     assert ok
     raw = json.loads(open(cfg, encoding="utf-8").read())
     assert raw["datasources"] == []
 
 
 def test_list(cfg):
-    ds_page.api_save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j", "driver_class": "d",
+    ds_page.save(cfg, {"name": "a", "type": "db2", "jdbc_url": "j", "driver_class": "d",
                            "password": "x", "original": ""})
-    lst = ds_page.api_list(cfg)
+    lst = ds_page.list_datasources(cfg)
     assert len(lst) == 1
     assert lst[0]["name"] == "a"
     assert lst[0]["password"].startswith("{ENC:")

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mcp-dbtools 控制台</title>
+<link rel="stylesheet" href="/ui/assets/style.css">
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">🦞 mcp-dbtools<div class="ver" id="ver"></div></div>
+  <nav id="nav">
+    <a href="/ui/" data-route="overview"><span>📊</span>概览</a>
+    <a href="/ui/datasources" data-route="datasources"><span>🔌</span>数据源</a>
+    <a href="/ui/query" data-route="query"><span>⌨️</span>查询</a>
+    <a href="/ui/tools" data-route="tools"><span>🧰</span>工具</a>
+    <a href="/ui/exports" data-route="exports"><span>📦</span>导出</a>
+    <a href="/ui/audit" data-route="audit"><span>🛡️</span>审计</a>
+    <a href="/ui/logs" data-route="logs"><span>📜</span>日志</a>
+  </nav>
+  <div class="side-foot">
+    <div class="kv"><span>模式</span><b id="mode">-</b></div>
+    <div class="kv"><span>MCP</span><b class="mono" id="mcp-endpoint">/mcp</b></div>
+    <button id="token-btn" class="ghost">🔑 设置 Token</button>
+  </div>
+</aside>
+
+<main>
+  <header class="topbar">
+    <h1 id="title">概览</h1>
+    <div class="topbar-right">
+      <span class="pill" id="health-pill">检测中…</span>
+      <span class="mono muted" id="clock"></span>
+    </div>
+  </header>
+  <section id="view"><div class="empty">加载中…</div></section>
+</main>
+
+<dialog id="token-dialog">
+  <form method="dialog" id="token-form">
+    <h3>访问 Token</h3>
+    <p class="muted">服务端设置了 <code>MCP_DBTOOLS_AUTH_TOKEN</code>，请输入 Bearer Token。仅保存在当前浏览器会话。</p>
+    <input id="token-input" type="password" autocomplete="off" placeholder="Bearer Token">
+    <div class="row">
+      <button value="cancel" class="ghost" type="submit">取消</button>
+      <button value="save" class="primary" id="token-save" type="submit">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/ui/assets/app.js"></script>
+</body>
+</html>

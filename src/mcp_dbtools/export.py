@@ -3,7 +3,7 @@
 设计：
 - start(): 发起导出（后台线程执行 SQL，逐批写入文本文件，不占内存）；
 - status(): 轮询查询导出状态；
-- 完成后通过 /export/{id}/download 下载文件。
+- 完成后通过 /api/v1/exports/{id}/download 下载文件。
 
 约定：
 - 只导出数据（文本文件），分隔符可自定义（默认逗号）；
@@ -153,7 +153,7 @@ class ExportManager:
     def _public(task: dict[str, Any]) -> dict[str, Any]:
         return {
             k: v for k, v in task.items() if k != "_path"
-        } | {"download_url": f"/export/{task['id']}/download"}
+        } | {"download_url": f"/api/v1/exports/{task['id']}/download"}
 
     # ------------------------------------------------------------------
     # 过期任务清理（防止 exports/ 目录无限膨胀）

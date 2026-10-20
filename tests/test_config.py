@@ -122,6 +122,50 @@ def test_load_settings(tmp_path, monkeypatch):
     assert settings.transport == "streamable-http"
 
 
+def test_load_settings_remote_requires_token(tmp_path, monkeypatch):
+    """remote 模式没有 Token 必须拒绝启动（避免对外裸奔）。"""
+    cfg = tmp_path / "datasources.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "datasources": [
+                    {
+                        "name": "a",
+                        "type": "tdh",
+                        "jdbc_url": "jdbc:transwarp://h:10000/db",
+                        "driver_class": "com.transwarp.jdbc.jdbc.TWJdbcDriver",
+                        "username": "u",
+                        "password": "p",
+                        "jars": ["inceptor-driver.jar"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MCP_DBTOOLS_CONFIG", str(cfg))
+    monkeypatch.setenv("MCP_DBTOOLS_MODE", "remote")
+    monkeypatch.delenv("MCP_DBTOOLS_AUTH_TOKEN", raising=False)
+    with pytest.raises(ConfigError) as e:
+        load_settings()
+    assert "AUTH_TOKEN" in str(e.value)
+
+    monkeypatch.setenv("MCP_DBTOOLS_AUTH_TOKEN", "tok")
+    settings = load_settings()
+    assert settings.mode == "remote"
+    assert settings.allow_remote_edit is False
+
+
+def test_load_settings_rejects_bad_mode(tmp_path, monkeypatch):
+    cfg = tmp_path / "datasources.json"
+    cfg.write_text(json.dumps({"datasources": []}), encoding="utf-8")
+    monkeypatch.setenv("MCP_DBTOOLS_CONFIG", str(cfg))
+    monkeypatch.setenv("MCP_DBTOOLS_MODE", "cloud")
+    with pytest.raises(ConfigError) as e:
+        load_settings()
+    assert "MCP_DBTOOLS_MODE" in str(e.value)
+
+
 def test_unknown_datasource():
     from mcp_dbtools.config import Settings
 

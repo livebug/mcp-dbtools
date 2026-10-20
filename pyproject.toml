@@ -32,6 +32,14 @@ mcp-dbtools = "mcp_dbtools.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Web 控制台是纯静态资源（零构建），必须随 wheel 一起分发
+[tool.setuptools.package-data]
+mcp_dbtools = [
+    "web/static/*.html",
+    "web/static/assets/*.js",
+    "web/static/assets/*.css",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

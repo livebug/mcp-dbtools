@@ -68,11 +68,7 @@ def register_tools(
             bool, Field(description="写操作（DELETE/UPDATE/INSERT/DROP 等）二次确认，默认 false 会拦截")
         ] = False,
     ) -> dict[str, Any] | str:
-        """在指定数据源上执行 SQL，返回列名与数据行（含 execution_time_ms）。
-
-        安全：默认只读模式，写操作（DELETE/UPDATE 等）需 confirm=true 二次确认并记审计；
-        大数据量查询默认最多返回 300 行，如需更多请用 start_export 异步导出。
-        """
+        """执行 SQL，返回列名与数据行。写操作需 confirm=true；大结果集改用 start_export。"""
         try:
             ds = get_datasource(settings, datasource)
             return manager.execute_query(ds, sql, limit=limit, confirm=confirm)
@@ -105,12 +101,7 @@ def register_tools(
             bool, Field(description="写操作二次确认（read_only=false 且含写语句时需 confirm=true）")
         ] = False,
     ) -> dict[str, Any] | str:
-        """执行服务器上的 SQL 脚本文件，支持 ${VAR} 参数占位符（如 ${V_DATE}）。
-
-        参数来源：params -> 环境变量 -> 缺失报错。脚本须位于脚本根目录内，
-        script_path 可传相对名（save_script 返回的 saved）或绝对路径（其 path）。
-        默认只读；写操作需 read_only=false + confirm=true 二次确认并记审计。
-        """
+        """执行脚本根目录内的 SQL 脚本，支持 ${VAR} 占位符（params > 环境变量）。"""
         try:
             ds = get_datasource(settings, datasource)
             return manager.execute_script(
@@ -133,13 +124,7 @@ def register_tools(
             bool, Field(description="同名脚本已存在时是否覆盖（默认 false）")
         ] = False,
     ) -> dict[str, Any] | str:
-        """保存 SQL 脚本到服务器脚本目录（供 execute_script 执行）。
-
-        推荐流程：save_script 落盘（可审计、可复用、可重跑）→ execute_script 执行。
-        返回值中 saved 为脚本根目录内的相对名、path 为绝对路径，两者都可直接
-        作为 execute_script 的 script_path 传入（无需手工拼接绝对路径）。
-        写入内容会记入审计（审计页面可查看脚本原文）。
-        """
+        """保存 SQL 脚本到脚本根目录，返回 saved（相对名）与 path（可直接传给 execute_script）。"""
         try:
             return manager.save_script(name, content, overwrite=overwrite)
         except (ConfigError, JDBCError) as exc:
@@ -197,7 +182,7 @@ def register_tools(
     @mcp.tool()
     @wrap_tool(monitor, "get_status")
     def get_status() -> dict[str, Any]:
-        """监控总览：各数据源 JDBC 连接/执行状态、JVM 与进程内存、工具调用统计、运行时长。"""
+        """监控总览：数据源状态、内存、工具统计、运行时长、缓存与事务。"""
         return {
             "uptime_seconds": round(monitor.uptime_seconds(), 1),
             "datasources": manager.all_status(),
@@ -256,11 +241,7 @@ def register_tools(
     @mcp.tool()
     @wrap_tool(monitor, "begin_transaction")
     def begin_transaction(datasource: DatasourceArg) -> dict[str, Any] | str:
-        """在指定数据源开启事务：独占一个连接并关闭自动提交。
-
-        同一数据源同时只允许一个活动事务；超时（默认 300s）自动回滚释放。
-        后续用 execute_in_transaction 执行、commit_transaction 提交、rollback_transaction 回滚。
-        """
+        """开启事务（独占连接、关闭自动提交）；同一数据源仅一个活动事务，超时自动回滚。"""
         try:
             ds = get_datasource(settings, datasource)
             return manager.begin_transaction(ds)
@@ -281,10 +262,7 @@ def register_tools(
             bool, Field(description="写操作二次确认，默认 false 会拦截")
         ] = False,
     ) -> dict[str, Any] | str:
-        """在活动事务连接上执行 SQL（不自动提交，可继续执行或提交/回滚）。
-
-        必须先调用 begin_transaction；返回结果带 in_transaction 提示。
-        """
+        """在活动事务中执行 SQL（不自动提交），须先 begin_transaction。"""
         try:
             ds = get_datasource(settings, datasource)
             return manager.execute_in_transaction(
@@ -347,12 +325,7 @@ def register_tools(
             bool, Field(description="写操作确认（导出仅支持查询语句，默认 false）")
         ] = False,
     ) -> dict[str, Any] | str:
-        """发起大数据量异步导出：后台执行 SQL 并写入文本文件（只导出数据）。
-
-        返回 export_id 与 download_url；用 get_export_status 轮询状态，
-        完成后访问 /export/{id}/download 下载文件。
-        分隔符可自定义（默认逗号）；CSV/Excel 等格式由客户端自行处理，服务端只导出数据。
-        """
+        """异步导出查询结果到文本文件，返回 export_id 与 download_url；用 get_export_status 轮询。"""
         try:
             ds = get_datasource(settings, datasource)
             if _sql_kind(sql) == "write" and not confirm:

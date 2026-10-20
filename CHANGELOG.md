@@ -3,6 +3,47 @@
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 与
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 变更
+
+- **项目分层重构**：新增 `app.py`（ASGI 装配）与三个包 —— `api/`（REST 分组）、`web/`（Web
+  控制台）、`services/`（与传输无关的业务逻辑）。`server.py` 瘦身为 CLI 入口；删除
+  `home_page.py` / `audit_page.py` / `logs_page.py` / `datasources_page.py` 四个"Python 拼 HTML"
+  的模块。
+- **统一 REST API（/api/v1）**：八个分组 `system` / `mcp` / `datasources` / `query` /
+  `metadata` / `exports` / `audit` / `logs`，统一响应包 `{"ok", "data"}` 与稳定错误码
+  （`INVALID_PARAM` / `UNAUTHORIZED` / `FORBIDDEN` / `NOT_FOUND` / `CONFLICT` /
+  `UPSTREAM_UNAVAILABLE` / `INTERNAL_ERROR`），列表统一分页字段。REST 执行的 SQL 也落审计
+  （工具名 `api.query.execute`）。规范见 `docs/架构设计.md`。
+- **MCP 能力自描述**：新增 `/api/v1/mcp/info`、`/api/v1/mcp/tools`（含参数 JSON Schema，
+  与 MCP `tools/list` 同源）、`/api/v1/mcp/tools/{name}`；控制台新增 `/ui/tools` 工具页。
+  20 个工具的 docstring 精简为一句话，参数说明不再写进文档，避免文档与代码双维护。
+- **Web 控制台（/ui/）**：零构建原生单页，History 路由七页（概览/数据源/查询/工具/导出/审计/日志），
+  Token 存 sessionStorage，下载走 `fetch` + Blob。静态资源通过 package-data 随 wheel 分发。
+- **本地/远程双部署形态**：新增 `MCP_DBTOOLS_MODE`（`local`/`remote`）与
+  `MCP_DBTOOLS_ALLOW_REMOTE_EDIT`。remote 模式未配置 Token 时拒绝启动；默认禁止经 API/控制台
+  修改数据源配置（只读），需要时显式放开。
+- **测试**：新增 `tests/test_api.py`（鉴权、统一响应包、密码脱敏、远程只读、数据源 CRUD、
+  旧 URL 下线）。
+
+### 破坏性变更
+
+旧 URL **直接下线**（404），迁移对照见 `docs/架构设计.md` 第 10 节：
+
+| 旧 | 新 |
+| --- | --- |
+| `GET /audit` / `GET /audit/api` | `GET /ui/audit` / `GET /api/v1/audit/*` |
+| `GET /logs` / `GET /logs/api` | `GET /ui/logs` / `GET /api/v1/logs` |
+| `GET /datasources` / `POST /datasources/api/save\|delete` | `GET /ui/datasources` / `POST\|PUT\|DELETE /api/v1/datasources` |
+| `GET /export/{id}/download` | `GET /api/v1/exports/{id}/download` |
+
+导出任务的 `download_url` 字段同步改为 `/api/v1/exports/{id}/download`。
+
+### 修复
+
+- `all_transaction_status()` 改为逐数据源降级：单个库不可用不再让 `/metrics` 整体 500。
+
 ## [1.5.0] - 2026-10-12
 
 ### 变更
