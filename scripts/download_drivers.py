@@ -7,6 +7,7 @@
 说明:
 - openGauss / GaussDB：从 Maven Central 下载官方 opengauss-jdbc 驱动。
 - MySQL：从 Maven Central 下载官方 mysql-connector-j 驱动。
+- SQLite：从 Maven Central 下载 xerial sqlite-jdbc 驱动（用于本地演示库 data/demo.db）。
 - TDH(Inceptor)：商业驱动，无法公开下载。请从星环(TDH)客户端安装包中取得
   inceptor-driver.jar 后手工放入 drivers/ 目录。
 - DB2：商业驱动（db2jcc4.jar），可从 DB2 服务器 java 目录（如
@@ -29,6 +30,11 @@ MYSQL_VERSION = "8.4.0"
 MYSQL_MAVEN = (
     "https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/"
     "{version}/mysql-connector-j-{version}.jar"
+)
+SQLITE_VERSION = "3.50.3.0"
+SQLITE_MAVEN = (
+    "https://repo1.maven.org/maven2/org/xerial/sqlite-jdbc/"
+    "{version}/sqlite-jdbc-{version}.jar"
 )
 
 
@@ -55,6 +61,12 @@ def main() -> int:
     )
     parser.add_argument(
         "--skip-mysql", action="store_true", help="跳过 MySQL 驱动下载"
+    )
+    parser.add_argument(
+        "--sqlite-version", default=SQLITE_VERSION, help="SQLite JDBC 驱动版本"
+    )
+    parser.add_argument(
+        "--skip-sqlite", action="store_true", help="跳过 SQLite 驱动下载"
     )
     args = parser.parse_args()
 
@@ -85,6 +97,17 @@ def main() -> int:
                 )
             except Exception as exc:  # noqa: BLE001
                 print(f"下载 MySQL 驱动失败: {exc}", file=sys.stderr)
+                return 1
+
+    if not args.skip_sqlite:
+        dest = drivers / f"sqlite-jdbc-{args.sqlite_version}.jar"
+        if dest.exists():
+            print(f"已存在，跳过: {dest.name}")
+        else:
+            try:
+                download(SQLITE_MAVEN.format(version=args.sqlite_version), dest)
+            except Exception as exc:  # noqa: BLE001
+                print(f"下载 SQLite 驱动失败: {exc}", file=sys.stderr)
                 return 1
 
     # TDH 驱动检查

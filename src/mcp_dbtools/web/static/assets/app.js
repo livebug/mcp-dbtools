@@ -44,6 +44,19 @@
     return `<div class="alert ${kind}">${esc(msg)}</div>`;
   }
 
+  function toast(msg, kind = "") {
+    const wrap = document.getElementById("toast-wrap");
+    if (!wrap) return;
+    const el = document.createElement("div");
+    el.className = `toast ${kind}`;
+    el.textContent = msg;
+    wrap.appendChild(el);
+    setTimeout(() => {
+      el.style.opacity = "0";
+      setTimeout(() => el.remove(), 200);
+    }, 3200);
+  }
+
   /* ---------- API ---------- */
   async function api(path, opts = {}) {
     const headers = Object.assign({}, opts.headers || {});
@@ -170,11 +183,13 @@
         if (btn.dataset.act === "del") {
           if (!confirm(`确认删除数据源 ${name}？`)) return;
           await api(`/datasources/${encodeURIComponent(name)}`, { method: "DELETE" });
+          toast(`已删除 ${name}（重启服务生效）`, "ok");
           route(true);
         } else if (btn.dataset.act === "test") {
           msg.innerHTML = alertBox(`正在测试 ${name} …`, "ok");
           const r = await api(`/datasources/${encodeURIComponent(name)}/test`, { method: "POST" });
           msg.innerHTML = alertBox(`${name} 连接正常：${r.product || ""} ${r.version || ""}`, "ok");
+          toast(`${name} 连接正常（${r.product || ""} ${r.version || ""}）`, "ok");
         } else if (btn.dataset.act === "edit") {
           const detail = await api(`/datasources/${encodeURIComponent(name)}`);
           showForm(detail.item);
@@ -222,6 +237,7 @@
         try {
           if (item) await api(`/datasources/${encodeURIComponent(item.name)}`, { method: "PUT", body });
           else await api("/datasources", { body });
+          toast("已保存（重启服务生效）", "ok");
           route(true);
         } catch (e) {
           msg.innerHTML = alertBox(e.message);
@@ -265,6 +281,7 @@
       try {
         const r = await api("/query/execute", { body });
         $("#q-cost").textContent = `${r.execution_time_ms} ms`;
+        toast(`查询完成：${r.row_count} 行 / ${r.execution_time_ms} ms`, "ok");
         if (!r.columns || !r.columns.length) {
           out.innerHTML = alertBox(r.affected_rows !== undefined ? `执行成功，影响 ${r.affected_rows} 行` : "执行成功（无结果集）", "ok");
           return;
@@ -319,6 +336,7 @@
             include_header: $("#e-header").checked,
           },
         });
+        toast("导出任务已创建", "ok");
         route(true);
       } catch (e) {
         $("#e-msg").innerHTML = alertBox(e.message);
@@ -514,6 +532,22 @@
 
   const clock = $("#clock");
   setInterval(() => { clock.textContent = new Date().toLocaleTimeString(); }, 1000);
+
+  /* ---------- 主题 ---------- */
+  const THEME_KEY = "mcp_dbtools_theme2";
+  function applyTheme(t) {
+    document.documentElement.dataset.theme = t;
+    localStorage.setItem(THEME_KEY, t);
+    const btn = document.getElementById("theme-btn");
+    if (btn) btn.textContent = t === "dark" ? "☀️ 浅色" : "🌙 深色";
+  }
+  (function initTheme() {
+    // 默认亮色；只有用户主动切到深色才记住（不再跟随系统，避免团队里深浅不一）
+    applyTheme(localStorage.getItem(THEME_KEY) === "dark" ? "dark" : "light");
+  })();
+  document.getElementById("theme-btn").addEventListener("click", () => {
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  });
 
   route();
 })();

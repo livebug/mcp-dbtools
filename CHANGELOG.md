@@ -27,6 +27,17 @@
 - **测试**：新增 `tests/test_api.py`（鉴权、统一响应包、密码脱敏、远程只读、数据源 CRUD、
   旧 URL 下线）。
 
+### 新增
+
+- **SQLite 演示数据源**：`config/datasources.json` 增加 `sqlite_demo`（`jdbc:sqlite:data/demo.db`），
+  新增 `scripts/create_sqlite_demo.py` 一键生成演示库（部门/员工/订单三张表），
+  `scripts/download_drivers.py` 支持下载 `sqlite-jdbc`。无需安装数据库即可跑通
+  控制台 / REST API / MCP 工具全链路。
+- **Web 控制台新风格**：亮色为默认主题，深色可手动切换（侧栏按钮或 `?theme=dark`，
+  localStorage 记忆），重做表格/表单/按钮/徽标，操作结果改为右下角 toast；补充窄屏布局。
+- **修复侧边栏滚动**：长内容滚动时侧边栏被带走的问题——改为固定外壳 + `main` 独立滚动，
+  侧栏自身内容过高时单独滚动。
+
 ### 破坏性变更
 
 旧 URL **直接下线**（404），迁移对照见 `docs/架构设计.md` 第 10 节：

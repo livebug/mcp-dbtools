@@ -39,9 +39,12 @@
 | 其他 PostgreSQL 兼容 | `org.postgresql.Driver` | `jdbc:postgresql://...` |
 | DB2 | `com.ibm.db2.jcc.DB2Driver` | `jdbc:db2://host:50000/db` |
 | MySQL / MariaDB | `com.mysql.cj.jdbc.Driver` | `jdbc:mysql://host:3306/db?useUnicode=true&characterEncoding=UTF-8` |
+| SQLite（演示/测试） | `org.sqlite.JDBC` | `jdbc:sqlite:data/demo.db` |
 
 > DB2 驱动（`db2jcc4.jar`）受 IBM 许可限制无法自动下载，请手动放置到 `drivers/` 目录；
 > `type: db2` 仅用于健康探测的 ping 语句（`SELECT 1 FROM SYSIBM.SYSDUMMY1`）。
+> SQLite 用于本地演示：运行 `python scripts/create_sqlite_demo.py` 生成 `data/demo.db`（三张表、样例数据），
+> 仓库自带 `sqlite_demo` 数据源配置，不用装数据库就能跑通控制台 / API / MCP 全链路。
 
 - 服务部署在服务器上，远程客户端通过 **HTTP（MCP streamable-http）** 调用，也支持 SSE 与本地 stdio。
 - JDBC 桥接通过 **open-dbclient Java 桥子进程**（NDJSON-RPC，`bridge.jar`）。
@@ -150,8 +153,11 @@ cp .env.example .env                 # 按需修改密码
 # 3. 构建 Java 桥 bridge.jar（数据面，JDBC 访问靠它；需 node + JDK 17+）
 bash scripts/build_bridge.sh          # 从并排的 open-dbclient 仓库构建，产物放到项目根
 
-# 4. 下载 JDBC 驱动（openGauss/GaussDB）
+# 4. 下载 JDBC 驱动（openGauss/GaussDB/MySQL/SQLite）
 python scripts/download_drivers.py
+
+# 4.1 可选：生成 SQLite 演示库（免装数据库，直接体验）
+python scripts/create_sqlite_demo.py
 
 # 5. 启动 HTTP 服务（会自动 spawn Java 桥子进程）
 python -m mcp_dbtools --transport streamable-http

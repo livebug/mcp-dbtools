@@ -39,6 +39,16 @@
       "username": "mysql",
       "password": "{ENV:MYSQL_PASSWORD}",
       "jars": ["mysql-connector-j-8.4.0.jar"]
+    },
+    {
+      "name": "sqlite_demo",
+      "type": "sqlite",
+      "description": "本地 SQLite 演示库（data/demo.db，可直接查询）",
+      "driver_class": "org.sqlite.JDBC",
+      "jdbc_url": "jdbc:sqlite:data/demo.db",
+      "username": "",
+      "password": "",
+      "jars": ["sqlite-jdbc-3.50.3.0.jar"]
     }
   ]
 }

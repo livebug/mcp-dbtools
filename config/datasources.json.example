@@ -47,6 +47,18 @@
       "jars": [
         "mysql-connector-j-8.4.0.jar"
       ]
+    },
+    {
+      "name": "sqlite_demo",
+      "type": "sqlite",
+      "description": "本地 SQLite 演示库（data/demo.db；驱动 sqlite-jdbc，脚本会自动下载）",
+      "driver_class": "org.sqlite.JDBC",
+      "jdbc_url": "jdbc:sqlite:data/demo.db",
+      "username": "",
+      "password": "",
+      "jars": [
+        "sqlite-jdbc-3.50.3.0.jar"
+      ]
     }
   ]
 }

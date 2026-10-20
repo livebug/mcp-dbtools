@@ -32,3 +32,8 @@ logs/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# 运行期演示库与构建产物
+bridge.jar
+data/
+exports/

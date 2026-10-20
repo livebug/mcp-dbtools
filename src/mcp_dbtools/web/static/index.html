@@ -5,6 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>mcp-dbtools 控制台</title>
 <link rel="stylesheet" href="/ui/assets/style.css">
+<script>
+  /* 首屏前定主题：默认亮色，可用 ?theme=dark|light 临时覆盖，选择会记住 */
+  try {
+    const KEY = "mcp_dbtools_theme2";
+    const u = new URL(location.href);
+    const q = u.searchParams.get("theme");
+    const saved = localStorage.getItem(KEY);
+    const t = (q === "dark" || q === "light") ? q : (saved === "dark" ? "dark" : "light");
+    document.documentElement.dataset.theme = t;
+    localStorage.setItem(KEY, t);
+    if (q) {
+      u.searchParams.delete("theme");
+      history.replaceState({}, "", u.pathname + u.search + u.hash);
+    }
+  } catch (e) {}
+</script>
 </head>
 <body>
 <aside class="sidebar">
@@ -21,6 +37,7 @@
   <div class="side-foot">
     <div class="kv"><span>模式</span><b id="mode">-</b></div>
     <div class="kv"><span>MCP</span><b class="mono" id="mcp-endpoint">/mcp</b></div>
+    <button id="theme-btn" class="ghost" title="切换深浅色">🌙 深色</button>
     <button id="token-btn" class="ghost">🔑 设置 Token</button>
   </div>
 </aside>
@@ -47,6 +64,8 @@
     </div>
   </form>
 </dialog>
+
+<div class="toast-wrap" id="toast-wrap"></div>
 
 <script src="/ui/assets/app.js"></script>
 </body>
