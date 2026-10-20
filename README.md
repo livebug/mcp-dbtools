@@ -5,13 +5,16 @@
 基于 **Python + JDBC** 的数据库 MCP（Model Context Protocol）服务，用于通过 LLM 客户端查询数据库。
 
 > 📖 **完整使用操作说明（部署/配置/工具/排错）：见 [docs/使用说明.md](docs/使用说明.md)**
+> 🏗 **架构与 API 规范（分层 / 路由表 / local & remote 部署 / 迁移对照）：见 [docs/架构设计.md](docs/架构设计.md)**
+> ⚖️ **技术选型（Node.js vs Python）：见 [docs/技术选型-nodejs-vs-python.md](docs/技术选型-nodejs-vs-python.md)**
 
 ## 功能特性
 
 - **多数据源**：GaussDB / openGauss / TDH Inceptor / Hive / DB2 / MySQL / PostgreSQL 兼容库（JDBC 能力探测自动适配，无方言硬编码）
 - **安全**：Bearer 鉴权 · 写操作二次确认 · 密码加密存储（`{ENC:...}` AES-256-GCM）· 熔断 · 按 IP 限流 · 行数上限
 - **并发与性能**：JDBC 连接池 · 工具异步化 · 元数据 TTL 缓存
-- **可观测性**：审计（JSONL 轮转 + SQLite）· 人工审计页面 `/audit` · 监控 `/metrics` · 服务日志 `/logs` · 健康检查 `/health`
+- **可观测性**：审计（JSONL 轮转 + SQLite）· Web 控制台 `/ui/` · REST API `/api/v1` · 监控 `/metrics` · 健康检查 `/health`
+- **可发现性**：MCP 能力自描述（`/api/v1/mcp/tools` 返回工具与参数 schema，控制台 `/ui/tools`）
 - **运维**：内网 pm2 离线部署 · systemd 单元 · 异步大数据导出 · 显式事务
 
 ## AI 协作（Agent 定制化）
@@ -63,24 +66,36 @@ flowchart LR
 | `POST /mcp` | ✅ 需要 | **MCP 端点**，LLM 客户端调用工具 |
 | `GET /health` | ❌ 免鉴权 | 健康检查；`?deep=1` 真实 `SELECT 1` 探测各数据源 |
 | `GET /metrics` | ✅ 需要 | 监控 JSON（数据源状态 / 内存 / 工具统计 / 缓存 / 事务） |
-| `GET /audit` | ❌ 页面 | 人工审计页面（数据接口 `/audit/api` 需鉴权） |
-| `GET /logs` | ❌ 页面 | 服务日志查看页面（数据接口 `/logs/api` 需鉴权） |
-| `GET /export/{id}/download` | ✅ 需要 | 导出文件下载 |
+| `GET /ui/` | ❌ 页面 | **Web 控制台**（概览/数据源/查询/导出/审计/日志）；数据走 `/api/v1`，需 Token |
+| `GET /api/v1/system/*` | ✅ 需要 | 元信息 / 健康 / 指标 / 脱敏配置 |
+| `GET/POST/PUT/DELETE /api/v1/datasources*` | ✅ 需要 | 数据源维护（远程模式默认只读） |
+| `POST /api/v1/query/execute` | ✅ 需要 | 执行 SQL（写操作需 `confirm=true`，落审计） |
+| `GET /api/v1/query/history` | ✅ 需要 | 执行历史 |
+| `GET/POST /api/v1/exports*` | ✅ 需要 | 导出任务创建 / 查询 |
+| `GET /api/v1/exports/{id}/download` | ✅ 需要 | 导出文件下载 |
+| `GET /api/v1/audit/*` | ✅ 需要 | 审计记录 / 详情 / 汇总 |
+| `GET /api/v1/logs` | ✅ 需要 | 服务日志尾部 |
+| `GET /api/v1/metadata/*` | ✅ 需要 | 库/表/字段浏览 |
+
+> 统一响应包：成功 `{"ok": true, "data": ...}`，失败 `{"ok": false, "error": {"code", "message"}}`。
+> 完整分组与错误码见 [docs/架构设计.md](docs/架构设计.md) 第 6 节。
 
 ## 目录结构
 
 ```
 mcp-dbtools/
 ├── src/mcp_dbtools/
-│   ├── server.py        # 服务入口（HTTP/SSE/stdio + 鉴权/限流/健康检查/审计/日志路由）
+│   ├── server.py        # CLI 入口（参数 / 日志 / transport 选择）
+│   ├── app.py           # ASGI 装配（MCP + /api/v1 + /ui + 中间件）
+│   ├── api/             # REST API 分组：system/datasources/query/metadata/exports/audit/logs
+│   ├── web/             # Web 控制台（零构建静态单页：/ui）
+│   ├── services/        # 与传输无关的业务逻辑（数据源配置读写、日志读取）
 │   ├── bridge.py        # Java 桥客户端（spawn bridge.jar + NDJSON-RPC）
 │   ├── jdbc.py          # 数据访问（经桥做查询/元数据/事务/健康 + 熔断/缓存/脚本）
 │   ├── tools.py         # MCP 工具定义（20 个）
 │   ├── config.py        # 配置加载（datasources.json + 环境变量 + 密码解密）
 │   ├── monitor.py       # 审计（JSONL 轮转 + SQLite）、执行历史、指标
 │   ├── export.py        # 异步导出 + 过期文件清理
-│   ├── audit_page.py    # 人工审计 HTML 页面
-│   ├── logs_page.py     # 服务日志查看页面
 │   ├── crypto.py        # 密码加密存储（{ENC:...}）
 │   └── ratelimit.py     # 令牌桶限流中间件
 ├── config/              # 数据源配置
@@ -102,6 +117,22 @@ mcp-dbtools/
 - Python 3.10+（已测 3.13）
 - JRE/JDK 17+（运行 Java 桥 `bridge.jar`，已测 OpenJDK 21）
 - （部署）Docker 或 systemd Linux 服务器
+
+## 部署形态（本地 / 远程）
+
+同一份代码，靠 `MCP_DBTOOLS_MODE` 切换：
+
+| 形态 | 配置 | 场景 | 鉴权 | 数据源编辑 |
+| --- | --- | --- | --- | --- |
+| 本地 | `MCP_DBTOOLS_MODE=local`（默认） | 本机开发、单机内网、stdio 接 IDE | 可选 Token | 控制台可改 |
+| 远程 | `MCP_DBTOOLS_MODE=remote` + `MCP_DBTOOLS_AUTH_TOKEN=...` | 服务器集中部署、多客户端/多系统共用 | **强制 Token** | 默认只读（`MCP_DBTOOLS_ALLOW_REMOTE_EDIT=1` 放开） |
+
+- 远程形态建议放在 nginx/Caddy 之后终结 TLS，应用只监听内网端口；
+- 数据面两种接法：桥随服务 spawn（默认），或连接共享桥
+  （`MCP_DBTOOLS_BRIDGE_URL` + `BRIDGE_TOKEN` + `TENANT_ID`），多实例共用一个 JVM；
+- 远程模式未设置 Token 时服务**拒绝启动**（避免对外裸奔）。
+
+拓扑与请求链路见 [docs/架构设计.md](docs/架构设计.md) 第 3、9 节。
 
 ## 快速开始
 
@@ -242,6 +273,9 @@ MCP_DBTOOLS_TENANT_ID=svc-a          # 每个服务实例唯一，谁开的连�
 | `rollback_transaction` | **事务**：回滚并结束事务 |
 | `get_transaction_status` | **事务**：查询活动事务状态与已持续时间 |
 
+> 参数 schema 不用查文档：`GET /api/v1/mcp/tools` 返回全部工具与参数 JSON Schema（与 MCP
+> `tools/list` 同源），控制台 `/ui/tools` 可直接浏览、搜索。
+
 > 安全：工具只能访问 `datasources.json` 中预配置的连接，无法通过参数注入任意 JDBC URL。
 
 ## 性能与安全
@@ -295,14 +329,14 @@ MCP_DBTOOLS_TENANT_ID=svc-a          # 每个服务实例唯一，谁开的连�
 ```python
 # 1) 发起导出（只导出数据到文本文件，分隔符自定义，默认逗号）
 start_export(datasource="gaussdb_test", sql="SELECT ...", delimiter=",", filename="report")
-# -> {"id": "xxx", "status": "running", "download_url": "/export/xxx/download"}
+# -> {"id": "xxx", "status": "running", "download_url": "/api/v1/exports/xxx/download"}
 
 # 2) 轮询检查
 get_export_status(export_id="xxx")
 # -> {"status": "succeeded", "rows": 100000, "columns": [...], ...}
 
-# 3) 完成后下载
-GET /export/{id}/download
+# 3) 完成后下载（需 Token）
+GET /api/v1/exports/{id}/download
 ```
 
 约定：
@@ -369,36 +403,29 @@ curl http://<服务器IP>:8000/metrics
 ### 审计记录内容
 每次工具调用记录：时间、工具名、**客户端 IP / User-Agent**、参数（含完整 SQL，超长自动截断）、耗时、成败、错误信息。通过 ASGI 中间件自动采集访问 IP，随请求上下文写入审计。
 
-### 人工审计管理页面（/audit）
-内置 Web 审计管理页面（无外部依赖，适配内网离线环境）：
+### Web 控制台（/ui/）
+内置零构建控制台（无外部依赖，适配内网离线环境），同时提供人工运维入口与 REST API：
 
 ```bash
-# 浏览器打开
-http://<服务器IP>:8000/audit
+# 浏览器打开（页面外壳免鉴权，首次进入弹窗输入 Token）
+http://<服务器IP>:8000/ui/
 ```
 
-支持按工具 / IP / 成败 / 关键字 / 时间检索、查看单条详情、统计概览、导出 CSV。
+| 页面 | 路由 | 能力 |
+| --- | --- | --- |
+| 概览 | `/ui/` | 健康状态、数据源健康表、工具调用统计 |
+| 数据源 | `/ui/datasources` | 增删改、连通性测试（远程只读模式隐藏写操作） |
+| 查询 | `/ui/query` | 选库执行 SQL、写操作二次确认、结果表格 |
+| 工具 | `/ui/tools` | 按组浏览 MCP 工具、参数 schema、搜索（读 `/api/v1/mcp/tools`） |
+| 导出 | `/ui/exports` | 创建导出任务、下载文件 |
+| 审计 | `/ui/audit` | 按工具/关键字/成败筛选、分页 |
+| 日志 | `/ui/logs` | 尾部行数、关键字过滤、手动刷新 |
 
-### 服务日志查看（/logs）
-服务运行日志默认落盘 `logs/app.log`（按大小轮转，保留 5 份），可网页实时查看：
+控制台的数据全部走 `/api/v1/*`（统一响应包 + 稳定错误码），第三方系统可直接对接同一组接口；
+分组与参数见 [docs/架构设计.md](docs/架构设计.md) 第 6 节。
 
-```bash
-# 浏览器打开（支持行数选择、关键字过滤、自动刷新）
-http://<服务器IP>:8000/logs
-# 或命令行
-tail -f logs/app.log
-```
-
-页面功能：
-- **概览卡片**：审计总数、今日、成功/失败数量
-- **多条件查询**：时间范围、工具、客户端 IP、SQL 关键字、成功/失败状态
-- **表格分页** + **详情弹窗**（完整参数 JSON、错误、UA）
-- **导出 CSV**
-- 数据来自 SQLite 审计库（`logs/audit.db`，可用 `MCP_DBTOOLS_AUDIT_DB` 配置）
-
-后端查询接口为 `GET /audit/api`（支持 `action=list / get / summary / export` 及筛选参数），供对接第三方审计系统。
-
-> 安全：启用 `MCP_DBTOOLS_AUTH_TOKEN` 后，`/audit/api` 与 `/mcp`、`/metrics` 均需携带 `Authorization: Bearer <token>`（页面可通过「访问令牌」输入框或 `?token=` 传入）。
+> 安全：启用 `MCP_DBTOOLS_AUTH_TOKEN` 后，`/api/v1/*`、`/mcp`、`/metrics` 均需携带
+> `Authorization: Bearer <token>`（控制台可用 Token 弹窗或 `?token=` 引导，Token 存 sessionStorage）。
 
 ### 配置项（.env）
 | 变量 | 默认 | 说明 |

@@ -32,14 +32,17 @@ GAUSS_PASSWORD=... . .venv/bin/activate && python -m mcp_dbtools --transport str
 
 | 文件 | 职责 |
 | --- | --- |
-| `src/mcp_dbtools/server.py` | 服务入口：HTTP 路由、鉴权、限流、健康检查、审计/日志页面 |
+| `src/mcp_dbtools/server.py` | CLI 入口：参数解析、日志、transport 选择 |
+| `src/mcp_dbtools/app.py` | ASGI 装配：MCP + `/api/v1` + `/ui` + 中间件（客户端信息/鉴权/限流） |
+| `src/mcp_dbtools/api/` | REST API 分组：`system` / `mcp` / `datasources` / `query` / `metadata` / `exports` / `audit` / `logs`（`deps.py` 放统一响应包与错误码） |
+| `src/mcp_dbtools/web/` | Web 控制台：`/ui` 路由 + `static/` 零构建单页（index.html / app.js / style.css） |
+| `src/mcp_dbtools/services/` | 与传输无关的业务逻辑：数据源配置读写与密码加密、日志读取 |
 | `src/mcp_dbtools/bridge.py` | Java 桥客户端：spawn `bridge.jar`、NDJSON-RPC 请求/响应/事件、错误映射 |
 | `src/mcp_dbtools/jdbc.py` | 数据访问：经桥做查询/元数据/事务/健康，含熔断、元数据缓存、脚本执行 |
 | `src/mcp_dbtools/tools.py` | 20 个 MCP 工具定义 |
 | `src/mcp_dbtools/config.py` | 配置加载（datasources.json + `MCP_DBTOOLS_*` 环境变量 + `{ENC:...}` 密码解密） |
 | `src/mcp_dbtools/monitor.py` | 审计（JSONL 轮转 + SQLite）、执行历史、指标 |
 | `src/mcp_dbtools/export.py` | 异步大数据导出 + 过期文件清理 |
-| `src/mcp_dbtools/audit_page.py` / `logs_page.py` | 审计 / 日志 HTML 页面 |
 | `src/mcp_dbtools/crypto.py` | 密码 AES-256-GCM 加密（`{ENC:...}`） |
 | `src/mcp_dbtools/ratelimit.py` | 令牌桶限流中间件 |
 
@@ -51,7 +54,8 @@ GAUSS_PASSWORD=... . .venv/bin/activate && python -m mcp_dbtools --transport str
 - **`jdbc.py` 里 `import time as _time`**——`from datetime import ... time` 会遮蔽 `time` 模块。
 - JDBC 错误统一由 `jdbc._request` 映射为 `JDBCError`；桥错误码的中文文案集中在 `_BRIDGE_ERROR_MESSAGES`。
 - 新增配置项必须同时更新：`config.py`（Settings 字段 + 环境变量）、`.env.example`、`docs/使用说明.md`。
-- 新增 MCP 工具必须 `@wrap_tool(monitor, "工具名")` 包装以记录审计。
+- 新增 MCP 工具必须 `@wrap_tool(monitor, "工具名")` 包装以记录审计；**工具描述保持一句话**，
+  详细参数由 `/api/v1/mcp/tools` 自动暴露，不要往 docstring 和文档里堆参数表。
 
 ## 安全红线（不可违反）
 
