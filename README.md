@@ -1,6 +1,6 @@
 # mcp-dbtools
 
-> **v1.5.0** · 数据库 MCP 服务：**MCP 工具 + REST API + Web 控制台** · [更新日志](CHANGELOG.md)
+> **v1.6.0** · 数据库 MCP 服务：**MCP 工具 + REST API + Web 控制台** · [更新日志](CHANGELOG.md)
 
 通过 JDBC 把 GaussDB / openGauss、TDH Inceptor、Hive、DB2、MySQL、PostgreSQL 等数据库
 开放给 LLM 客户端（MCP），同时提供 REST API 与 Web 控制台供人使用、供系统对接。
