@@ -119,3 +119,12 @@ def test_documented_tool_count_matches_code():
     assert f"{count} 个 MCP 工具" in doc, f"使用说明应写 {count} 个 MCP 工具"
     assert f"{count} 个 MCP 工具定义" in doc, f"使用说明目录树应写 {count} 个 MCP 工具定义"
     assert f"{count} 个 MCP 工具定义" in agents, f"AGENTS.md 应写 {count} 个 MCP 工具定义"
+
+
+def test_docs_version_matches_project():
+    """README / 使用说明的版本标识必须与 pyproject 同步，避免文档停留在旧版本。"""
+    version = _project()["version"]
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    usage = (ROOT / "docs" / "使用说明.md").read_text(encoding="utf-8")
+    assert f"v{version}" in readme, f"README.md 未标注 v{version}"
+    assert f"v{version}" in usage, f"docs/使用说明.md 未标注 v{version}"

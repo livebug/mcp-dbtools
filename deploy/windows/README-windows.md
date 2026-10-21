@@ -6,8 +6,8 @@
 
 | 形态 | 目标机前置 | 包体积 | 构建命令 / 产物名 |
 | --- | --- | --- | --- |
-| **轻量包**（默认） | 需 Python 3.13（64 位）+ JDK/JRE 11+ | ≈ 39 MB | `--platform windows` → `mcp-dbtools-offline-windows-YYYYMMDD.zip` |
-| **自包含包** | **无需任何预装**（Python / JDK / Node 都不用） | ≈ 74 MB | `--platform windows --self-contained` → `mcp-dbtools-offline-windows-selfcontained-YYYYMMDD.zip` |
+| **轻量包**（默认） | 需 Python 3.13（64 位）+ JDK/JRE 17+ | ≈ 53 MB | `--platform windows` → `mcp-dbtools-offline-windows-YYYYMMDD.zip` |
+| **自包含包** | **无需任何预装**（Python / JDK / Node 都不用） | ≈ 90 MB | `--platform windows --self-contained` → `mcp-dbtools-offline-windows-selfcontained-YYYYMMDD.zip` |
 
 自包含包在包内直接展开好解压即用的运行时：
 
@@ -222,7 +222,7 @@ mcp-dbtools-offline-windows-*.zip 解压后:
 ## 重新生成 Windows 离线包（联网机器上执行）
 
 ```bash
-# 轻量包（要求目标机有 Python 3.13 + JDK/JRE 11+；含官方 Python 安装器）
+# 轻量包（要求目标机有 Python 3.13 + JDK/JRE 17+；含官方 Python 安装器）
 bash scripts/build_offline.sh --platform windows
 
 # 自包含包（目标机什么都不用装：包内带便携 Python + JRE 17）

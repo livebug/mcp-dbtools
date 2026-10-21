@@ -4,7 +4,7 @@ REM ============================================================
 REM  mcp-dbtools Windows 离线安装脚本
 REM
 REM  前置要求：
-REM    - 轻量包：目标机需 Python 3.13（64 位）与 JDK/JRE 11+
+REM    - 轻量包：目标机需 Python 3.13（64 位）与 JDK/JRE 17+
 REM    - 自包含包（--self-contained）：目标机**无需任何预装**，
 REM      脚本自动使用包内 runtime\python（便携 CPython）与 runtime\jre（Temurin JRE）
 REM    - 服务托管：有 pm2 则沿用 pm2；没有则用 Windows 自带计划任务（无需 Node）

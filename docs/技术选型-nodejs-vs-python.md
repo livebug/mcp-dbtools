@@ -7,7 +7,7 @@
 
 | 项 | 数值 |
 | --- | --- |
-| Python 代码 | ~4.3k 行（`src/mcp_dbtools/`，含 api/web/services 重构后） |
+| Python 代码 | ~4.1k 行（`src/mcp_dbtools/`，含 api/web/services 重构后） |
 | 测试 | 127 passed / 28 skipped（集成测试按需 skip） |
 | 运行时依赖 | 6 个（mcp、uvicorn、starlette、python-dotenv、pydantic、cryptography） |
 | 数据面 | `bridge.jar`（Java 17），NDJSON-RPC over stdin/stdout 或 TCP |
